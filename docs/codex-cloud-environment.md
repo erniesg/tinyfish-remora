@@ -64,7 +64,7 @@ Only add these when a task needs them. They are not required for the current dem
 
 ### IBKR
 
-- `TRADING_GATEWAY_SHARED_SECRET`
+- `REMORA_TRADING_SECRET`
 - `IBKR_GATEWAY_URL`
 - `IBKR_ACCOUNT_ID`
 - `IBKR_API_TOKEN`

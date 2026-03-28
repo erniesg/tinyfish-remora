@@ -1,7 +1,6 @@
 import "server-only";
 
 import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 
 import type { VenueConnection } from "@/lib/demo/types";
 import type { RuntimeProviderStatus, RuntimeStatusResponse } from "@/lib/runtime/types";
@@ -25,6 +24,7 @@ export interface RuntimeConfig {
 }
 
 let cachedDevVars: Record<string, string> | null = null;
+const DEV_VARS_FILES = [".dev.vars", ".dev.vars.local"] as const;
 
 function loadDevVars(): Record<string, string> {
   if (cachedDevVars) return cachedDevVars;
@@ -33,13 +33,9 @@ function loadDevVars(): Record<string, string> {
     return cachedDevVars;
   }
 
-  const candidates = [
-    path.join(/*turbopackIgnore: true*/ process.cwd(), ".dev.vars"),
-    path.join(/*turbopackIgnore: true*/ process.cwd(), ".dev.vars.local"),
-  ];
   const values: Record<string, string> = {};
 
-  for (const candidate of candidates) {
+  for (const candidate of DEV_VARS_FILES) {
     if (!existsSync(candidate)) continue;
 
     const contents = readFileSync(candidate, "utf8");
@@ -131,7 +127,7 @@ export function getRuntimeConfig(): RuntimeConfig {
     ibkrAccountId: readEnv("IBKR_ACCOUNT_ID"),
     ibkrApiToken: readEnv("IBKR_API_TOKEN"),
     ibkrGatewayUrl: readEnv("IBKR_GATEWAY_URL"),
-    tradingGatewaySharedSecret: readEnv("TRADING_GATEWAY_SHARED_SECRET", "REMORA_TRADING_SECRET"),
+    tradingGatewaySharedSecret: readEnv("REMORA_TRADING_SECRET", "TRADING_GATEWAY_SHARED_SECRET"),
     polyApiKey: readEnv("POLY_API_KEY", "POLYMARKET_API_KEY"),
     polyApiSecret: readEnv("POLY_API_SECRET", "POLYMARKET_API_SECRET"),
     polyPassphrase: readEnv("POLY_PASSPHRASE", "POLYMARKET_PASSPHRASE"),
@@ -147,11 +143,10 @@ export function buildRuntimeStatus(): RuntimeStatusResponse {
   const providers: RuntimeProviderStatus[] = [
     buildProviderStatus(
       "tinyfish",
-      [
-        ["TINYFISH_RUN_URL", config.tinyfishRunUrl],
-        ["TINYFISH_API_KEY", config.tinyfishApiKey],
-      ],
-      "TinyFish collector is configured for server-side runs.",
+      [["TINYFISH_RUN_URL", config.tinyfishRunUrl]],
+      config.tinyfishApiKey
+        ? "TinyFish collector is configured for server-side runs with API-key auth."
+        : "TinyFish collector is configured for server-side runs. Add TINYFISH_API_KEY when the upstream requires auth.",
     ),
     buildProviderStatus(
       "review",
