@@ -64,27 +64,20 @@ Only add these when a task needs them. They are not required for the current dem
 
 ### IBKR
 
+- `REMORA_TRADING_SECRET`
 - `IBKR_GATEWAY_URL`
 - `IBKR_ACCOUNT_ID`
 - `IBKR_API_TOKEN`
 
 ### Polymarket
 
+- `POLYMARKET_GATEWAY_URL`
 - `POLYGON_PRIVATE_KEY`
 - `POLY_API_KEY`
 - `POLY_API_SECRET`
 - `POLY_PASSPHRASE`
 - `POLY_FUNDER_ADDRESS`
 - `POLY_WALLET_ADDRESS`
-- `REMORA_TRADING_SECRET`
-
-### Compatibility aliases
-
-The current demo copy still references `POLYMARKET_*` names in some places. Until the real adapter work standardizes naming, set these aliases too if you want one Cloud environment that can support both the current repo docs and Remora-derived adapter code:
-
-- `POLYMARKET_API_KEY`
-- `POLYMARKET_API_SECRET`
-- `POLYMARKET_PASSPHRASE`
 
 ## Local bootstrap
 
@@ -94,6 +87,8 @@ For local terminals, not Codex Cloud:
 source ~/.nvm/nvm.sh
 npm ci
 ```
+
+If you keep runtime service secrets in `.dev.vars` for local workers, the app runtime will also read `.dev.vars` and `.dev.vars.local` from the repo root for server-only values.
 
 ## Required validation before opening a PR
 

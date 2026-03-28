@@ -9,6 +9,7 @@ export type Direction = "long" | "short" | "yes" | "no" | "none";
 export type RecipeReadiness = "demo" | "research" | "live-ready";
 export type ApprovalState = "paper" | "live-candidate" | "live-armed";
 export type SourceKind = "official" | "archive" | "market" | "watchlist";
+export type RuntimeMode = "demo" | "hybrid" | "live";
 export type AgentEventPhase =
   | "STARTED"
   | "STREAMING_URL"
@@ -84,6 +85,8 @@ export interface RunLaunchResponse {
   request: RunRequest;
   streamUrl: string;
   streamingUrl: string;
+  runtimeMode?: RuntimeMode;
+  runtimeWarnings?: string[];
 }
 
 export interface TradableHints {
@@ -261,6 +264,7 @@ export interface RunSummary {
   intents: ExecutionIntent[];
   receipts: ExecutionReceipt[];
   fallbackState?: "blocked" | "empty";
+  runtimeMode?: RuntimeMode;
 }
 
 export interface AgentEvent {

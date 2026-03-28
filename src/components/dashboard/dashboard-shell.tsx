@@ -40,6 +40,7 @@ import type {
   VenueCandidate,
   VenueConnection,
 } from "@/lib/demo/types";
+import type { RuntimeStatusResponse } from "@/lib/runtime/types";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -209,6 +210,7 @@ export function DashboardShell() {
   const [generatedReasoning, setGeneratedReasoning] = useState<string[]>([]);
   const [killSwitch, setKillSwitch] = useState(false);
   const [runError, setRunError] = useState("");
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
   const [isGenerating, startGenerating] = useTransition();
   const [isLaunching, setIsLaunching] = useState(false);
 
@@ -284,6 +286,25 @@ export function DashboardShell() {
   }, [runs, selectedRunId]);
 
   useEffect(() => {
+    let active = true;
+
+    fetch("/api/runtime/status", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as RuntimeStatusResponse;
+      })
+      .then((payload) => {
+        if (!active || !payload) return;
+        setRuntimeStatus(payload);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!hydrated) return;
     const interval = window.setInterval(() => {
       setPositions((current) =>
@@ -316,6 +337,8 @@ export function DashboardShell() {
         progress: event.progress,
         phase: event.phase,
         lastMessage: event.message,
+        streamingUrl:
+          typeof event.meta?.streaming_url === "string" ? event.meta.streaming_url : existing.streamingUrl,
         status:
           event.phase === "BLOCKED"
             ? "blocked"
@@ -389,8 +412,11 @@ export function DashboardShell() {
     );
   }
 
-  const readyConnections = connections.filter((connection) => connection.status === "ready").length;
-  const liveWarnings = connections.filter(
+  const runtimeManagedConnections = Boolean(runtimeStatus && runtimeStatus.mode !== "demo");
+  const effectiveConnections =
+    runtimeManagedConnections && runtimeStatus ? runtimeStatus.connections : connections;
+  const readyConnections = effectiveConnections.filter((connection) => connection.status === "ready").length;
+  const liveWarnings = effectiveConnections.filter(
     (connection) => connection.mode === "live" && connection.status === "warning",
   ).length;
   const totalExposure = positions.reduce((sum, position) => sum + position.markPrice * position.quantity, 0);
@@ -402,7 +428,7 @@ export function DashboardShell() {
   const selectedReview = selectedRun?.reviewedSignals[0] ?? null;
   const activeVenues = targetVenues(activeRecipe, preferredVenue);
   const launchConnections = activeVenues
-    .map((venue) => connections.find((connection) => connection.venue === venue && connection.mode === launchMode))
+    .map((venue) => effectiveConnections.find((connection) => connection.venue === venue && connection.mode === launchMode))
     .filter((connection): connection is VenueConnection => Boolean(connection));
   const liveLaunchBlocked =
     launchMode === "live" &&
@@ -495,6 +521,7 @@ export function DashboardShell() {
         reviewedSignals: [],
         intents: [],
         receipts: [],
+        runtimeMode: launch.runtimeMode,
       };
       setRuns((current) => [nextRun, ...current].slice(0, 12));
 
@@ -630,7 +657,7 @@ export function DashboardShell() {
       const recipe = getRecipeDefinition(strategy.runConfig.recipeId);
       const strategyVenues = targetVenues(recipe, strategy.runConfig.preferredVenue ?? recipe.defaultVenueBias);
       const blocked = strategyVenues.some((venue) =>
-        connections.some(
+        effectiveConnections.some(
           (connection) =>
             connection.venue === venue &&
             connection.mode === "live" &&
@@ -828,7 +855,7 @@ export function DashboardShell() {
                     </div>
                   </div>
                   <div className="rounded-full border border-[var(--line)] bg-black/25 px-4 py-2 text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                    {selectedRun?.mode ?? launchMode} · {selectedRun?.status ?? "idle"}
+                    {selectedRun?.mode ?? launchMode} · {selectedRun?.status ?? "idle"} · {selectedRun?.runtimeMode ?? runtimeStatus?.mode ?? "demo"}
                   </div>
                 </div>
 
@@ -916,6 +943,24 @@ export function DashboardShell() {
           </div>
         ) : null}
 
+        {runtimeStatus ? (
+          <div className="cockpit-reveal rounded-[1.7rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] px-5 py-4">
+            <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Runtime mode</div>
+            <div className="mt-2 text-sm leading-7 text-[var(--paper)]">
+              {runtimeStatus.mode === "demo"
+                ? "Demo fallback is active. TinyFish, review, and execution continue to run locally until gateway env vars are configured."
+                : runtimeStatus.mode === "hybrid"
+                  ? "Hybrid runtime is active. Some providers are env-backed and the rest still fall back to the local demo engine."
+                  : "Live runtime is active. TinyFish, review, and execution routes are all env-backed."}
+            </div>
+            {runtimeStatus.warnings.slice(0, 2).map((warning) => (
+              <div key={warning} className="mt-2 text-xs leading-6 text-[var(--muted)]">
+                {warning}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <section className="section-reveal grid gap-5 lg:grid-cols-[0.84fr_1.16fr]">
           <div className="rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
             <div className="flex items-center justify-between gap-4">
@@ -928,7 +973,7 @@ export function DashboardShell() {
               <Gauge className="h-6 w-6 text-[var(--signal)]" />
             </div>
             <div className="mt-6 space-y-4">
-              {connections.map((connection) => (
+              {effectiveConnections.map((connection) => (
                 <div key={connection.id} className="rounded-[1.8rem] border border-[var(--line)] bg-black/18 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -948,10 +993,14 @@ export function DashboardShell() {
                           className="input-shell"
                           value={value}
                           onChange={(event) => updateConnectionField(connection.id, field, event.target.value)}
+                          readOnly={runtimeManagedConnections}
                           type={field.toLowerCase().includes("key") || field.toLowerCase().includes("secret") ? "password" : "text"}
                         />
                         {value ? (
                           <span className="text-xs text-[var(--muted)]">Stored as {maskValue(value)}</span>
+                        ) : null}
+                        {runtimeManagedConnections ? (
+                          <span className="text-xs text-[var(--muted)]">Managed by server environment.</span>
                         ) : null}
                       </label>
                     ))}
@@ -1410,7 +1459,7 @@ export function DashboardShell() {
                     <div className="flex flex-wrap items-start justify-between gap-4">
                       <div>
                         <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                          {run.mode} · {run.status} · {runProgressLabel(run.progress)}
+                          {run.mode} · {run.status} · {run.runtimeMode ?? runtimeStatus?.mode ?? "demo"} · {runProgressLabel(run.progress)}
                         </div>
                         <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">{run.label}</div>
                         <div className="mt-2 text-sm leading-6 text-[var(--paper)]">{run.lastMessage}</div>

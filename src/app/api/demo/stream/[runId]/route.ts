@@ -1,4 +1,5 @@
-import { buildRunTimeline, parseRunRequestFromUrl } from "@/lib/demo/engine";
+import { parseRunRequestFromUrl } from "@/lib/demo/engine";
+import { buildRuntimeRunTimeline } from "@/lib/runtime/orchestrator";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,7 @@ export async function GET(
   const { runId } = await context.params;
   const url = new URL(request.url);
   const runRequest = parseRunRequestFromUrl(url);
-  const timeline = buildRunTimeline(runId, runRequest);
+  const timeline = await buildRuntimeRunTimeline(runId, runRequest);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({

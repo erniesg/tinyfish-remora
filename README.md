@@ -60,16 +60,34 @@ npm run dev
 
 The repo runs in demo mode without third-party credentials. When you want to wire live services, copy `.env.example` to `.env.local` and fill in values locally.
 
+If you already keep local runtime service values in `.dev.vars` or `.dev.vars.local`, the server runtime reads those files too for non-browser secrets. Keep browser-exposed `NEXT_PUBLIC_*` values in `.env.local`.
+
 - Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
 - Supabase: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - TinyFish: `TINYFISH_API_KEY`, `TINYFISH_RUN_URL`, `REVIEW_URL`, `OPENAI_API_KEY`
+- Trading gateway auth: `REMORA_TRADING_SECRET`
 - IBKR: `IBKR_GATEWAY_URL`, `IBKR_ACCOUNT_ID`, `IBKR_API_TOKEN`
-- Polymarket: `POLYGON_PRIVATE_KEY`, `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_PASSPHRASE`, `POLY_FUNDER_ADDRESS`, `POLY_WALLET_ADDRESS`
-- Compatibility aliases: `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_PASSPHRASE`
+- Polymarket: `POLYMARKET_GATEWAY_URL`, `POLYGON_PRIVATE_KEY`, `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_PASSPHRASE`, `POLY_FUNDER_ADDRESS`, `POLY_WALLET_ADDRESS`
+
+## Runtime integration mode
+
+The dashboard now checks `/api/runtime/status` on load.
+
+- `demo`: everything runs through the local timeline engine.
+- `hybrid`: one or more of TinyFish, review, IBKR, or Polymarket is env-backed and the rest still fall back locally.
+- `live`: all four provider seams are env-backed.
+
+These env-backed URLs are first-party adapter endpoints, not raw third-party browser credentials:
+
+- `TINYFISH_RUN_URL` accepts a TinyFish `skill` payload and can return collected raw signals plus an optional `streamingUrl`.
+- `REVIEW_URL` accepts batched `signals` plus review constraints and can return `reviewedSignals`.
+- `IBKR_GATEWAY_URL` accepts an execution intent and can return a receipt and optional position.
+- `POLYMARKET_GATEWAY_URL` accepts an execution intent and can return a receipt and optional position.
 
 Use these local-only files:
 
 - `.env.local` for real credentials and secrets
+- `.dev.vars` or `.dev.vars.local` for local runtime service secrets when you already keep worker-style local vars there
 - `AGENT_PRIVATE.local.md` for local operator instructions, account mappings, and private demo notes
 
 Neither file should be committed.

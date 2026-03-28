@@ -1,6 +1,8 @@
 import { RECIPE_REGISTRY } from "@/lib/demo/mock-data";
 import type {
   AgentEvent,
+  ExecutionIntent,
+  ExecutionReceipt,
   ExecutionMode,
   GeneratedStrategyResponse,
   Position,
@@ -17,7 +19,7 @@ import type {
   VenueConnection,
 } from "@/lib/demo/types";
 
-type TimedEvent = AgentEvent & { delayMs: number };
+export type TimedEvent = AgentEvent & { delayMs: number };
 
 function iso(offsetSeconds = 0): string {
   return new Date(Date.now() + offsetSeconds * 1000).toISOString();
@@ -162,8 +164,8 @@ export function assessConnection(connection: VenueConnection): VenueConnection {
         ? ["accountId", "gatewayUrl"]
         : ["accountId", "gatewayUrl", "apiToken"]
       : connection.mode === "paper"
-        ? ["walletAddress"]
-        : ["walletAddress", "apiKey", "apiSecret", "passphrase", "privateKey"];
+        ? ["walletAddress", "gatewayUrl"]
+        : ["walletAddress", "gatewayUrl", "apiKey", "apiSecret", "passphrase", "privateKey"];
 
   const missing = requiredFields.filter((field) => !connection.fields[field]?.trim());
 
@@ -244,7 +246,7 @@ function resolveInstrumentBundle(
   return bundle.filter((entry) => entry.venue === preferredVenue);
 }
 
-function buildRawSignals(
+export function buildRawSignals(
   runId: string,
   recipe: RecipeDefinition,
   request: RunRequest,
@@ -304,7 +306,7 @@ function buildRawSignals(
   });
 }
 
-function buildReviewedSignal(
+export function buildReviewedSignal(
   rawSignal: RawSignal,
   recipe: RecipeDefinition,
   request: RunRequest,
@@ -387,26 +389,11 @@ function priceForInstrument(symbolOrToken: string, venue: Venue): number {
   return 0.31 + (seed % 38) / 100;
 }
 
-function buildIntent(
+export function buildIntent(
   reviewedSignal: ReviewedSignal,
   instrument: ReviewedInstrument,
   request: RunRequest,
-): {
-  reviewFingerprint: string;
-  venue: Venue;
-  mode: ExecutionMode;
-  symbolOrToken: string;
-  side: "buy" | "sell";
-  notionalUsd: number;
-  maxSlippageBps: number;
-  expiresAt: string;
-  exitPlan: NonNullable<ReviewedSignal["exitPlan"]>;
-  thesis: string;
-  label: string;
-  marketSlug?: string;
-  previewOnly?: boolean;
-  metadata?: Record<string, string | number | boolean | null>;
-} {
+): ExecutionIntent {
   const notionalUsd = request.mode === "live"
     ? instrument.venue === "ibkr"
       ? 1250
@@ -433,22 +420,10 @@ function buildIntent(
   };
 }
 
-function buildReceipt(
-  intent: ReturnType<typeof buildIntent>,
+export function buildReceipt(
+  intent: ExecutionIntent,
   request: RunRequest,
-): {
-  venue: Venue;
-  mode: ExecutionMode;
-  status: "preview" | "submitted" | "filled";
-  symbolOrToken: string;
-  side: "buy" | "sell";
-  notionalUsd: number;
-  receiptId: string;
-  submittedAt: string;
-  filledPrice: number;
-  filledQuantity: number;
-  message: string;
-} {
+): ExecutionReceipt {
   const fillPrice = priceForInstrument(intent.symbolOrToken, intent.venue);
   const filledQuantity = Number(
     (intent.notionalUsd / fillPrice).toFixed(intent.venue === "ibkr" ? 2 : 0),
@@ -479,13 +454,15 @@ function buildReceipt(
   };
 }
 
-function buildPosition(
-  intent: ReturnType<typeof buildIntent>,
-  receipt: ReturnType<typeof buildReceipt>,
+export function buildPosition(
+  intent: ExecutionIntent,
+  receipt: ExecutionReceipt,
   strategyId: string | undefined,
   strategyName: string,
 ): Position {
   const markDelta = intent.venue === "ibkr" ? 0.72 : 0.03;
+  const filledPrice = receipt.filledPrice ?? 0;
+  const filledQuantity = receipt.filledQuantity ?? 0;
   const direction =
     intent.venue === "polymarket"
       ? intent.side === "sell"
@@ -503,17 +480,17 @@ function buildPosition(
     mode: intent.mode,
     symbolOrToken: intent.symbolOrToken,
     direction,
-    quantity: receipt.filledQuantity,
-    entryPrice: receipt.filledPrice,
-    markPrice: Number((receipt.filledPrice + markDelta).toFixed(intent.venue === "ibkr" ? 2 : 3)),
-    exposureUsd: Number((receipt.filledPrice * receipt.filledQuantity).toFixed(2)),
+    quantity: filledQuantity,
+    entryPrice: filledPrice,
+    markPrice: Number((filledPrice + markDelta).toFixed(intent.venue === "ibkr" ? 2 : 3)),
+    exposureUsd: Number((filledPrice * filledQuantity).toFixed(2)),
     realizedPnlUsd: 0,
     status: "open",
     updatedAt: iso(),
   };
 }
 
-function buildBlockedTimeline(
+export function buildBlockedTimeline(
   runId: string,
   recipe: RecipeDefinition,
   request: RunRequest,
@@ -720,7 +697,7 @@ export function buildRunTimeline(runId: string, requestInput: RunRequest): Timed
       strategyId: request.strategyId,
       phase: "RECEIPT",
       timestamp: iso(index + 11),
-      message: receipt.message,
+      message: receipt.message ?? "Execution receipt emitted.",
       progress: 94,
       receipt,
       position: positions[index],
@@ -751,34 +728,116 @@ export function buildRunTimeline(runId: string, requestInput: RunRequest): Timed
   return timeline;
 }
 
-function classifyObjective(objective: string): RecipeDefinition {
+function countKeywordMatches(value: string, terms: string[]): number {
+  return terms.reduce((score, term) => (value.includes(term) ? score + 1 : score), 0);
+}
+
+function analyzeObjectiveIntent(objective: string) {
   const normalized = objective.toLowerCase();
+  const hasGovernmentIntent =
+    countKeywordMatches(normalized, [
+      "government",
+      "policy",
+      "official",
+      "ministry",
+      "release",
+      "bulletin",
+      "translation",
+      "central bank",
+      "regulation",
+    ]) > 0;
+  const hasPredictionIntent =
+    countKeywordMatches(normalized, [
+      "prediction",
+      "polymarket",
+      "event market",
+      "probability",
+      "odds",
+      "repricing",
+      "market pricing",
+    ]) > 0;
 
-  if (
-    normalized.includes("prediction") ||
-    normalized.includes("polymarket") ||
-    normalized.includes("odds") ||
-    normalized.includes("fed")
-  ) {
-    return getRecipeDefinition("official-vs-polymarket");
-  }
+  return {
+    normalized,
+    hasGovernmentIntent,
+    hasPredictionIntent,
+    hasChinaIntent:
+      countKeywordMatches(normalized, [
+        "china",
+        "chinese",
+        "mandarin",
+        "adr",
+        "stimulus",
+        "beijing",
+        "ndrc",
+        "mofcom",
+        "miit",
+      ]) > 0,
+    hasJapanIntent:
+      countKeywordMatches(normalized, ["japan", "boj", "yen", "tokyo", "japanese"]) > 0,
+    hasEuropeIntent:
+      countKeywordMatches(normalized, ["europe", "eu", "germany", "france", "italy", "energy"]) > 0,
+    hasFedIntent:
+      countKeywordMatches(normalized, ["fed", "fomc", "sec", "resolution", "event pricing"]) > 0,
+  };
+}
 
-  if (
-    normalized.includes("japan") ||
-    normalized.includes("boj") ||
-    normalized.includes("yen") ||
-    normalized.includes("tokyo")
-  ) {
-    return getRecipeDefinition("jp-translation-drift");
-  }
+function classifyObjective(objective: string): RecipeDefinition {
+  const intent = analyzeObjectiveIntent(objective);
+  const recipeScores = [
+    {
+      recipeId: "cn-policy-lag",
+      score:
+        countKeywordMatches(intent.normalized, [
+          "china",
+          "chinese",
+          "mandarin",
+          "adr",
+          "stimulus",
+          "beijing",
+          "ministry",
+          "policy",
+          "official",
+        ]) +
+        (intent.hasGovernmentIntent ? 2 : 0) +
+        (intent.hasChinaIntent ? 3 : 0) +
+        (intent.hasGovernmentIntent && intent.hasPredictionIntent ? 4 : 0),
+    },
+    {
+      recipeId: "official-vs-polymarket",
+      score:
+        countKeywordMatches(intent.normalized, [
+          "prediction",
+          "polymarket",
+          "event market",
+          "probability",
+          "odds",
+          "fed",
+          "sec",
+          "resolution",
+        ]) +
+        (intent.hasPredictionIntent ? 3 : 0) +
+        (intent.hasFedIntent ? 2 : 0) -
+        (intent.hasChinaIntent && intent.hasGovernmentIntent ? 2 : 0),
+    },
+    {
+      recipeId: "jp-translation-drift",
+      score:
+        countKeywordMatches(intent.normalized, ["japan", "boj", "yen", "tokyo", "japanese", "translation"]) +
+        (intent.hasJapanIntent ? 3 : 0) +
+        (intent.hasGovernmentIntent ? 1 : 0),
+    },
+    {
+      recipeId: "eu-energy-watch",
+      score:
+        countKeywordMatches(intent.normalized, ["europe", "eu", "germany", "france", "italy", "energy"]) +
+        (intent.hasEuropeIntent ? 3 : 0) +
+        (intent.hasGovernmentIntent ? 1 : 0),
+    },
+  ].sort((left, right) => right.score - left.score);
 
-  if (
-    normalized.includes("europe") ||
-    normalized.includes("energy") ||
-    normalized.includes("germany") ||
-    normalized.includes("france")
-  ) {
-    return getRecipeDefinition("eu-energy-watch");
+  if (recipeScores[0]?.score > 0) {
+    return getRecipeDefinition(recipeScores[0].recipeId);
   }
 
   return getRecipeDefinition("cn-policy-lag");
@@ -796,6 +855,7 @@ export function generateStrategyFromBrief(
   preferredVenue: VenueCandidate,
 ): GeneratedStrategyResponse {
   const recipe = classifyObjective(objective);
+  const intent = analyzeObjectiveIntent(objective);
   const venueBias = normalizeVenueCandidate(preferredVenue, recipe);
   const selectedSources = recipe.sources.slice(0, 2).map((source) => source.id);
   const baseInstruments = resolveInstrumentBundle(recipe, venueBias, recipe.countries[0]);
@@ -834,7 +894,9 @@ export function generateStrategyFromBrief(
     },
     venueMapping: uniqueVenueMapping(baseInstruments),
     scoringRationale: [
-      `Selected ${recipe.title} because its sources and venues match the objective.`,
+      intent.hasGovernmentIntent && intent.hasPredictionIntent && recipe.id === "cn-policy-lag"
+        ? `Selected ${recipe.title} because the objective is government-first but still wants a prediction-market hedge.`
+        : `Selected ${recipe.title} because its sources and venues match the objective.`,
       "Kept the generated thesis on paper by default so the operator can review before promotion.",
       "Reused existing prompt, source, and scoring seams instead of inventing a parallel schema.",
     ],
@@ -865,7 +927,9 @@ export function generateStrategyFromBrief(
   return {
     draft,
     reasoning: [
-      "The agent reused a proven recipe rather than inventing an unbounded source graph.",
+      intent.hasGovernmentIntent && intent.hasPredictionIntent && recipe.id === "cn-policy-lag"
+        ? "The classifier treated prediction-market language as a venue hedge instead of abandoning the government-policy collector."
+        : "The agent reused a proven recipe rather than inventing an unbounded source graph.",
       "Countries, sources, skills, prompt version, and venue bias are embedded directly in the generated run config.",
       "The saved draft is rerunnable because the same RunRequest contract can be passed back into launch and stream.",
     ],
