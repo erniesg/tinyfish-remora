@@ -6,7 +6,12 @@
   --paper: #f5f3ee;
   --muted: #b8b1aa;
   --signal: #e63b2e;
+  --signal-soft: rgba(230, 59, 46, 0.14);
   --line: rgba(255, 255, 255, 0.12);
+  --panel: rgba(255, 255, 255, 0.05);
+  --panel-strong: rgba(8, 8, 10, 0.74);
+  --success: #7dd3a8;
+  --danger: #fda4af;
 }
 
 @theme inline {
@@ -29,8 +34,9 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), sans-serif;
   background-image:
-    radial-gradient(circle at top, rgba(230, 59, 46, 0.13), transparent 24rem),
-    linear-gradient(180deg, #0f0f10 0%, #141312 100%);
+    radial-gradient(circle at top left, rgba(230, 59, 46, 0.16), transparent 24rem),
+    radial-gradient(circle at top right, rgba(88, 129, 217, 0.12), transparent 22rem),
+    linear-gradient(180deg, #0b0b0d 0%, #141312 100%);
   position: relative;
   overflow-x: hidden;
 }
@@ -88,11 +94,12 @@ button:disabled {
   align-items: center;
   gap: 0.65rem;
   border-radius: 999px;
-  background: var(--signal);
+  background: linear-gradient(135deg, #f04b39 0%, #d73326 100%);
   color: #050505;
   padding: 0.95rem 1.3rem;
   font-size: 0.95rem;
   font-weight: 700;
+  box-shadow: 0 10px 28px rgba(230, 59, 46, 0.18);
 }
 
 .secondary-button {
@@ -121,6 +128,48 @@ button:disabled {
 .input-shell:focus {
   border-color: rgba(230, 59, 46, 0.4);
   box-shadow: 0 0 0 1px rgba(230, 59, 46, 0.35);
+}
+
+.live-pulse {
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+.progress-beam {
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-beam::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  animation: progress-scan 1.8s linear infinite;
+}
+
+.event-glow {
+  box-shadow: inset 0 0 0 1px rgba(230, 59, 46, 0.2), 0 0 32px rgba(230, 59, 46, 0.06);
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 1;
+  }
+}
+
+@keyframes progress-scan {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(120%);
+  }
 }
 
 code {

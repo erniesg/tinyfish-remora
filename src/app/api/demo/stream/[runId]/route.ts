@@ -1,4 +1,4 @@
-import { buildRunTimeline } from "@/lib/demo/engine";
+import { buildRunTimeline, parseRunRequestFromUrl } from "@/lib/demo/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -12,15 +12,8 @@ export async function GET(
 ) {
   const { runId } = await context.params;
   const url = new URL(request.url);
-  const recipeId = url.searchParams.get("recipeId") || "ndrc-policy-lag";
-  const strategyId = url.searchParams.get("strategyId") || "strategy-mandarin-lag";
-  const mode = (url.searchParams.get("mode") as "paper" | "live" | null) || "paper";
-  const timeline = buildRunTimeline({
-    runId,
-    recipeId,
-    strategyId,
-    mode,
-  });
+  const runRequest = parseRunRequestFromUrl(url);
+  const timeline = buildRunTimeline(runId, runRequest);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({

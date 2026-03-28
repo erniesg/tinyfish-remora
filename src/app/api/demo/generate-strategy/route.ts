@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { generateStrategyFromBrief } from "@/lib/demo/engine";
-import type { RiskProfile } from "@/lib/demo/types";
+import type { RiskProfile, VenueCandidate } from "@/lib/demo/types";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +8,7 @@ export async function POST(request: Request) {
   const body = (await request.json()) as {
     objective?: string;
     riskProfile?: RiskProfile;
-    preferredVenue?: "ibkr" | "polymarket" | "both";
+    preferredVenue?: VenueCandidate;
   };
 
   return NextResponse.json(
