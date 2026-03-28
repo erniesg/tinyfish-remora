@@ -344,7 +344,7 @@ export function buildReviewedSignal(
 
   return {
     fingerprint: rawSignal.fingerprint,
-    tradable: recipe.readiness !== "research" || request.mode === "paper",
+    tradable: recipe.readiness !== "research-only" || request.mode === "paper",
     venueCandidates:
       instruments.length === 2
         ? "both"
@@ -913,7 +913,7 @@ export function generateStrategyFromBrief(
       },
       {
         label: "Live Readiness",
-        score: recipe.readiness === "live-ready" ? 87 : recipe.readiness === "demo" ? 69 : 54,
+        score: recipe.readiness === "live-ready" ? 87 : recipe.readiness === "paper-only" ? 69 : 54,
         note:
           recipe.readiness === "live-ready"
             ? "Can be promoted later after preflight and operator approval."
