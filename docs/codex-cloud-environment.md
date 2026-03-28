@@ -50,6 +50,7 @@ Only add these when a task needs them. They are not required for the current dem
 
 ### TinyFish and review services
 
+- `TINYFISH_API_KEY`
 - `TINYFISH_RUN_URL`
 - `REVIEW_URL`
 - `OPENAI_API_KEY`
@@ -70,6 +71,17 @@ Only add these when a task needs them. They are not required for the current dem
 ### Polymarket
 
 - `POLYGON_PRIVATE_KEY`
+- `POLY_API_KEY`
+- `POLY_API_SECRET`
+- `POLY_PASSPHRASE`
+- `POLY_FUNDER_ADDRESS`
+- `POLY_WALLET_ADDRESS`
+- `REMORA_TRADING_SECRET`
+
+### Compatibility aliases
+
+The current demo copy still references `POLYMARKET_*` names in some places. Until the real adapter work standardizes naming, set these aliases too if you want one Cloud environment that can support both the current repo docs and Remora-derived adapter code:
+
 - `POLYMARKET_API_KEY`
 - `POLYMARKET_API_SECRET`
 - `POLYMARKET_PASSPHRASE`
