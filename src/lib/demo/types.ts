@@ -6,7 +6,12 @@ export type RiskProfile = "conservative" | "balanced" | "aggressive";
 export type SignalKind = "policy" | "prediction";
 export type VenueCandidate = Venue | "both" | "none";
 export type Direction = "long" | "short" | "yes" | "no" | "none";
-export type RecipeReadiness = "demo" | "research" | "live-ready";
+export type RecipeReadiness =
+  | "paper-only"
+  | "research-only"
+  | "live-ready"
+  | "demo"
+  | "research";
 export type ApprovalState = "paper" | "live-candidate" | "live-armed";
 export type SourceKind = "official" | "archive" | "market" | "watchlist";
 export type RuntimeMode = "demo" | "hybrid" | "live";
