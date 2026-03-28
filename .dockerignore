@@ -1,0 +1,8 @@
+.git
+.github
+.next
+node_modules
+npm-debug.log
+Dockerfile*
+AGENT_PRIVATE.local.md
+.env.local
