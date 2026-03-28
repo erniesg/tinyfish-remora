@@ -18,25 +18,13 @@ function readString(value: unknown): string | undefined {
 function mergeLaunchResponse(base: RunLaunchResponse, payload: unknown): RunLaunchResponse {
   if (!isObject(payload)) return base;
 
-  const requestPayload = isObject(payload.request) ? payload.request : undefined;
-  const mergedRequest = {
-    ...base.request,
-    ...(requestPayload ?? {}),
-    countries: base.request.countries,
-    sources: base.request.sources,
-    mode: base.request.mode,
-    preferredVenue: base.request.preferredVenue,
-    promptVersion: base.request.promptVersion,
-    strategyId: base.request.strategyId,
-  };
-
   return {
     ...base,
-    runId: readString(payload.runId) ?? base.runId,
     label: readString(payload.label) ?? base.label,
-    streamUrl: readString(payload.streamUrl) ?? base.streamUrl,
-    streamingUrl: readString(payload.streamingUrl) ?? base.streamingUrl,
-    request: mergedRequest,
+    runId: base.runId,
+    streamUrl: base.streamUrl,
+    streamingUrl: base.streamingUrl,
+    request: base.request,
   };
 }
 

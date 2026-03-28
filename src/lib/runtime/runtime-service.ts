@@ -24,5 +24,5 @@ export async function launchRuntimeRun(request: Partial<RunRequest>) {
 }
 
 export async function getRuntimeTimeline(runId: string, request: RunRequest): Promise<TimedEvent[]> {
-  return resolveRuntimeProvider().getTimeline(runId, request);
+  return ServiceRuntimeProvider.getTimeline(runId, request);
 }
