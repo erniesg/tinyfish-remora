@@ -21,7 +21,7 @@ import type {
   RunRequest,
 } from "@/lib/demo/types";
 import { getRuntimeConfig } from "@/lib/runtime/env";
-import { postRuntimeJson } from "@/lib/runtime/http";
+import { postRuntimeJson, postRuntimeRecords } from "@/lib/runtime/http";
 
 function iso(offsetSeconds = 0): string {
   return new Date(Date.now() + offsetSeconds * 1000).toISOString();
@@ -48,6 +48,15 @@ function readNumber(record: Record<string, unknown>, key: string): number | unde
 function readBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
   const value = record[key];
   return typeof value === "boolean" ? value : undefined;
+}
+
+function readStringCandidate(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = readString(record, key);
+    if (value) return value;
+  }
+
+  return undefined;
 }
 
 function normalizeMetadata(value: unknown): Record<string, string | number | boolean | null> | undefined {
@@ -123,11 +132,38 @@ function normalizeReviewedSignal(value: unknown, fallback: ReviewedSignal): Revi
   const fallbackInstruments = fallback.instrumentCandidates;
   const instrumentCandidates = Array.isArray(value.instrumentCandidates) && value.instrumentCandidates.length > 0
     ? value.instrumentCandidates.map((candidate, index) => {
-        const base = fallbackInstruments[index] ?? fallbackInstruments[0];
-
         if (!isRecord(candidate)) {
-          return base;
+          return (
+            fallbackInstruments[index] ??
+            fallbackInstruments[0] ?? {
+              venue: "polymarket" as const,
+              symbolOrToken: `candidate-${index + 1}`,
+              label: `Candidate ${index + 1}`,
+            }
+          );
         }
+
+        const base = fallbackInstruments[index] ?? fallbackInstruments[0] ?? {
+          venue:
+            candidate.venue === "ibkr" || candidate.venue === "polymarket"
+              ? candidate.venue
+              : "polymarket",
+          symbolOrToken:
+            readString(candidate, "symbolOrToken") ??
+            readString(candidate, "marketSlug") ??
+            `candidate-${index + 1}`,
+          label:
+            readString(candidate, "label") ??
+            readString(candidate, "symbolOrToken") ??
+            readString(candidate, "marketSlug") ??
+            `Candidate ${index + 1}`,
+          marketSlug: readString(candidate, "marketSlug"),
+          sideHint:
+            candidate.sideHint === "buy" || candidate.sideHint === "sell"
+              ? candidate.sideHint
+              : undefined,
+          metadata: normalizeMetadata(candidate.metadata),
+        };
 
         return {
           ...base,
@@ -264,6 +300,38 @@ function normalizePosition(value: unknown, fallback: Position): Position {
   };
 }
 
+function looksLikeRawSignal(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    Boolean(readStringCandidate(value, ["title", "headline", "name"])) &&
+    Boolean(readStringCandidate(value, ["sourceUrl", "source_url", "url", "link"]))
+  );
+}
+
+function looksLikeReviewedSignal(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    Boolean(readStringCandidate(value, ["fingerprint", "reviewFingerprint", "signalFingerprint"])) &&
+    (
+      typeof value.tradable === "boolean" ||
+      Array.isArray(value.instrumentCandidates) ||
+      Array.isArray(value.instrument_candidates) ||
+      Boolean(readStringCandidate(value, ["thesis", "reasoning", "summary"]))
+    )
+  );
+}
+
+function dedupeBy<T>(items: T[], keyFor: (item: T, index: number) => string): T[] {
+  const seen = new Set<string>();
+
+  return items.filter((item, index) => {
+    const key = keyFor(item, index);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function readObjectCandidate(value: unknown, keys: string[]): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   for (const key of keys) {
@@ -286,16 +354,206 @@ function readArrayCandidate(value: unknown, keys: string[]): unknown[] | undefin
   return undefined;
 }
 
+function resolveTinyfishSkill(
+  recipe: RecipeDefinition,
+  request: RunRequest,
+): "scan" | "hunt" {
+  if (request.skills?.length === 1) {
+    return request.skills[0];
+  }
+
+  return recipe.category === "prediction" ? "hunt" : "scan";
+}
+
+function buildTinyfishSources(
+  selectedSources: RecipeDefinition["sources"],
+): Array<Record<string, string>> {
+  return selectedSources.map((source) => ({
+    id: source.id,
+    name: source.name,
+    url: source.url,
+    country: source.country,
+    lang: source.locale,
+  }));
+}
+
+function buildPredictionWatchlist(
+  recipe: RecipeDefinition,
+  request: RunRequest,
+  selectedSources: RecipeDefinition["sources"],
+): Array<Record<string, string>> {
+  if (selectedSources.length === 0) {
+    return [
+      {
+        id: recipe.id,
+        title: recipe.title,
+        polymarketQuery: request.strategyBrief || recipe.title,
+        resolutionSourceUrl: recipe.sources[0]?.url ?? "https://polymarket.com/",
+      },
+    ];
+  }
+
+  return selectedSources.map((source) => ({
+    id: source.id,
+    title: source.name,
+    polymarketQuery:
+      source.id === "cme-fedwatch"
+        ? "Fed rate no change next meeting"
+        : source.id === "sec-edgar"
+          ? "SEC filing approval denial markets"
+          : request.strategyBrief || `${recipe.title} ${source.name}`,
+    resolutionSourceUrl: source.url,
+  }));
+}
+
+function buildTinyfishRequestBody(
+  runId: string,
+  recipe: RecipeDefinition,
+  request: RunRequest,
+  selectedSources: RecipeDefinition["sources"],
+): Record<string, unknown> {
+  const skill = resolveTinyfishSkill(recipe, request);
+  const selectedCountries = request.countries ?? recipe.countries;
+
+  return {
+    skill,
+    payload: {
+      runId,
+      recipeId: recipe.id,
+      strategyId: request.strategyId,
+      promptVersion: request.promptVersion ?? recipe.promptVersion,
+      strategyBrief: request.strategyBrief,
+      countries: selectedCountries,
+      sources: buildTinyfishSources(selectedSources),
+      preferredVenue: request.preferredVenue ?? recipe.defaultVenueBias,
+    },
+    config:
+      skill === "hunt"
+        ? {
+            watchlist: buildPredictionWatchlist(recipe, request, selectedSources),
+          }
+        : selectedSources.length > 0
+          ? {
+              sources: buildTinyfishSources(selectedSources),
+            }
+          : {
+              countries: selectedCountries,
+            },
+  };
+}
+
+function buildReviewConstraints(
+  recipe: RecipeDefinition,
+  request: RunRequest,
+): Record<string, string | number | boolean | string[]> {
+  return {
+    accountType: request.mode === "live" ? "margin" : "cash",
+    balanceUsd: request.mode === "live" ? 100_000 : 25_000,
+    maxPositionUsd: request.mode === "live" ? 2_500 : 1_000,
+    previewOnly: request.previewOnly,
+    preferredVenue: request.preferredVenue ?? recipe.defaultVenueBias,
+    countries: request.countries ?? recipe.countries,
+  };
+}
+
+function extractStreamingUrl(records: unknown[]): string | undefined {
+  for (const record of records) {
+    if (!isRecord(record)) continue;
+
+    const direct = readStringCandidate(record, ["streamingUrl", "streaming_url"]);
+    if (direct) return direct;
+
+    const nested = readObjectCandidate(record, ["result", "data"]);
+    const nestedUrl =
+      nested && readStringCandidate(nested, ["streamingUrl", "streaming_url"]);
+    if (nestedUrl) return nestedUrl;
+  }
+
+  return undefined;
+}
+
+function extractRuntimeRawSignals(
+  records: unknown[],
+  fallbacks: RawSignal[],
+): RawSignal[] {
+  const collected: RawSignal[] = [];
+
+  for (const record of records) {
+    const candidates = readArrayCandidate(record, ["rawSignals", "signals", "results", "data"]);
+    if (candidates && candidates.length > 0) {
+      collected.push(
+        ...candidates.map((signal, index) =>
+          normalizeRawSignal(signal, fallbacks[index] ?? fallbacks[0]),
+        ),
+      );
+      continue;
+    }
+
+    if (looksLikeRawSignal(record)) {
+      collected.push(normalizeRawSignal(record, fallbacks[collected.length] ?? fallbacks[0]));
+    }
+  }
+
+  return dedupeBy(
+    collected,
+    (signal, index) => signal.fingerprint || signal.id || `${signal.sourceUrl}:${index}`,
+  );
+}
+
+function extractRuntimeReviewedSignals(
+  records: unknown[],
+  rawSignals: RawSignal[],
+  fallbacks: ReviewedSignal[],
+): ReviewedSignal[] {
+  const candidates: ReviewedSignal[] = [];
+
+  for (const record of records) {
+    const arrayPayload = readArrayCandidate(record, [
+      "reviewedSignals",
+      "reviews",
+      "results",
+      "data",
+    ]);
+    if (arrayPayload && arrayPayload.length > 0) {
+      candidates.push(
+        ...arrayPayload.map((entry, index) =>
+          normalizeReviewedSignal(entry, fallbacks[index] ?? fallbacks[0]),
+        ),
+      );
+      continue;
+    }
+
+    if (looksLikeReviewedSignal(record)) {
+      candidates.push(
+        normalizeReviewedSignal(record, fallbacks[candidates.length] ?? fallbacks[0]),
+      );
+    }
+  }
+
+  const uniqueCandidates = dedupeBy(
+    candidates,
+    (reviewedSignal, index) => reviewedSignal.fingerprint || `${reviewedSignal.title}:${index}`,
+  );
+  const byFingerprint = new Map(
+    uniqueCandidates.map((reviewedSignal) => [reviewedSignal.fingerprint, reviewedSignal]),
+  );
+
+  return rawSignals.map((rawSignal, index) => {
+    return byFingerprint.get(rawSignal.fingerprint) ?? fallbacks[index];
+  });
+}
+
 async function collectRawSignals(
   runId: string,
   recipe: RecipeDefinition,
   request: RunRequest,
+  selectedSources: RecipeDefinition["sources"],
   fallbacks: RawSignal[],
 ): Promise<{ rawSignals: RawSignal[]; streamingUrl: string; provider: string }> {
   const config = getRuntimeConfig();
   const fallbackStreamingUrl = `https://stream.agent.tinyfish.ai/demo/${runId}`;
 
-  if (!config.tinyfishRunUrl || !config.tinyfishApiKey) {
+  if (!config.tinyfishRunUrl) {
     return {
       rawSignals: fallbacks,
       streamingUrl: fallbackStreamingUrl,
@@ -304,28 +562,22 @@ async function collectRawSignals(
   }
 
   try {
-    const response = await postRuntimeJson<Record<string, unknown>>(
+    const response = await postRuntimeRecords<Record<string, unknown>>(
       config.tinyfishRunUrl,
+      buildTinyfishRequestBody(runId, recipe, request, selectedSources),
       {
-        runId,
-        recipe,
-        request,
-      },
-      {
-        bearerToken: config.tinyfishApiKey,
+        apiKey: config.tinyfishApiKey,
+        apiKeyHeader: "X-API-Key",
         sharedSecret: config.tradingGatewaySharedSecret,
-        timeoutMs: 15_000,
+        accept: "text/event-stream, application/json",
+        timeoutMs: 7_500,
       },
     );
-    const candidateSignals = readArrayCandidate(response, ["rawSignals", "signals"]);
-    const rawSignals =
-      candidateSignals && candidateSignals.length > 0
-        ? candidateSignals.map((signal, index) => normalizeRawSignal(signal, fallbacks[index] ?? fallbacks[0]))
-        : fallbacks;
+    const rawSignals = extractRuntimeRawSignals(response, fallbacks);
 
     return {
       rawSignals,
-      streamingUrl: readString(response, "streamingUrl") ?? fallbackStreamingUrl,
+      streamingUrl: extractStreamingUrl(response) ?? fallbackStreamingUrl,
       provider: "tinyfish",
     };
   } catch {
@@ -337,45 +589,49 @@ async function collectRawSignals(
   }
 }
 
-async function reviewSignal(
+async function reviewSignals(
   runId: string,
   recipe: RecipeDefinition,
   request: RunRequest,
-  rawSignal: RawSignal,
-  fallback: ReviewedSignal,
-): Promise<{ reviewedSignal: ReviewedSignal; provider: string }> {
+  rawSignals: RawSignal[],
+  fallbacks: ReviewedSignal[],
+): Promise<{ reviewedSignals: ReviewedSignal[]; provider: string }> {
   const config = getRuntimeConfig();
 
-  if (!config.reviewUrl) {
+  if (!config.reviewUrl || rawSignals.length === 0) {
     return {
-      reviewedSignal: fallback,
+      reviewedSignals: fallbacks,
       provider: "demo",
     };
   }
 
   try {
-    const response = await postRuntimeJson<Record<string, unknown>>(
+    const response = await postRuntimeRecords<Record<string, unknown>>(
       config.reviewUrl,
       {
         runId,
-        recipe,
-        request,
-        rawSignal,
+        recipeId: recipe.id,
+        strategyId: request.strategyId,
+        promptVersion: request.promptVersion ?? recipe.promptVersion,
+        signals: rawSignals,
+        constraints: buildReviewConstraints(recipe, request),
       },
       {
         bearerToken: config.openAiApiKey,
         sharedSecret: config.tradingGatewaySharedSecret,
+        accept: "text/event-stream, application/json",
+        timeoutMs: 8_000,
       },
     );
-    const payload = readObjectCandidate(response, ["reviewedSignal", "review"]);
+    const reviewedSignals = extractRuntimeReviewedSignals(response, rawSignals, fallbacks);
 
     return {
-      reviewedSignal: normalizeReviewedSignal(payload, fallback),
+      reviewedSignals,
       provider: "review",
     };
   } catch {
     return {
-      reviewedSignal: fallback,
+      reviewedSignals: fallbacks,
       provider: "demo",
     };
   }
@@ -471,7 +727,13 @@ export async function buildRuntimeRunTimeline(runId: string, requestInput: RunRe
   }
 
   const fallbackRawSignals = buildRawSignals(runId, recipe, request);
-  const collection = await collectRawSignals(runId, recipe, request, fallbackRawSignals);
+  const collection = await collectRawSignals(
+    runId,
+    recipe,
+    request,
+    selectedSources,
+    fallbackRawSignals,
+  );
   const rawSignals = collection.rawSignals;
 
   if (rawSignals.length === 0) {
@@ -483,13 +745,17 @@ export async function buildRuntimeRunTimeline(runId: string, requestInput: RunRe
     );
   }
 
-  const reviewedResults = await Promise.all(
-    rawSignals.map(async (rawSignal) => {
-      const fallback = buildReviewedSignal(rawSignal, recipe, request);
-      return reviewSignal(runId, recipe, request, rawSignal, fallback);
-    }),
+  const fallbackReviewedSignals = rawSignals.map((rawSignal) =>
+    buildReviewedSignal(rawSignal, recipe, request),
   );
-  const reviewedSignals = reviewedResults.map((result) => result.reviewedSignal);
+  const review = await reviewSignals(
+    runId,
+    recipe,
+    request,
+    rawSignals,
+    fallbackReviewedSignals,
+  );
+  const reviewedSignals = review.reviewedSignals;
   const firstReviewed = reviewedSignals[0];
   const activeInstruments = firstReviewed.instrumentCandidates.slice(
     0,
@@ -513,7 +779,7 @@ export async function buildRuntimeRunTimeline(runId: string, requestInput: RunRe
 
   const receipts = executionResults.map((result) => result.receipt);
   const positions = executionResults.map((result) => result.position);
-  const reviewProvider = reviewedResults.some((result) => result.provider === "review") ? "review" : "demo";
+  const reviewProvider = review.provider;
   const executionProvider =
     executionResults.find((result) => result.provider === "ibkr" || result.provider === "polymarket")?.provider ??
     "demo";

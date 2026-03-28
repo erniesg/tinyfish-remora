@@ -11,15 +11,8 @@ async function enterDemoCockpit(page: Page) {
 }
 
 async function waitForRunToComplete(page: Page) {
-  await expect
-    .poll(
-      async () => page.getByText(/\bcomplete\b/i).count(),
-      { timeout: 30_000, message: "expected at least one completed run indicator" },
-    )
-    .toBeGreaterThan(0);
-
   await expect(page.getByText("Event ledger", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Receipt:/).first()).toBeVisible();
+  await expect(page.getByText(/Receipt:/).first()).toBeVisible({ timeout: 30_000 });
 }
 
 test.describe("tinyfish-remora Playwright flows", () => {

@@ -65,7 +65,7 @@ If you already keep local runtime service values in `.dev.vars` or `.dev.vars.lo
 - Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
 - Supabase: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - TinyFish: `TINYFISH_API_KEY`, `TINYFISH_RUN_URL`, `REVIEW_URL`, `OPENAI_API_KEY`
-- Trading gateway auth: `REMORA_TRADING_SECRET`
+- Trading gateway auth: `TRADING_GATEWAY_SHARED_SECRET`
 - IBKR: `IBKR_GATEWAY_URL`, `IBKR_ACCOUNT_ID`, `IBKR_API_TOKEN`
 - Polymarket: `POLYMARKET_GATEWAY_URL`, `POLYGON_PRIVATE_KEY`, `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_PASSPHRASE`, `POLY_FUNDER_ADDRESS`, `POLY_WALLET_ADDRESS`
 
@@ -76,6 +76,8 @@ The dashboard now checks `/api/runtime/status` on load.
 - `demo`: everything runs through the local timeline engine.
 - `hybrid`: one or more of TinyFish, review, IBKR, or Polymarket is env-backed and the rest still fall back locally.
 - `live`: all four provider seams are env-backed.
+
+Env-backed collector and review calls are time-boxed. When a provider is slow or unavailable, the app falls back to the local demo engine instead of stalling the run board.
 
 These env-backed URLs are first-party adapter endpoints, not raw third-party browser credentials:
 

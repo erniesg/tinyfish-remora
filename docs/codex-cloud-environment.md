@@ -64,7 +64,7 @@ Only add these when a task needs them. They are not required for the current dem
 
 ### IBKR
 
-- `REMORA_TRADING_SECRET`
+- `TRADING_GATEWAY_SHARED_SECRET`
 - `IBKR_GATEWAY_URL`
 - `IBKR_ACCOUNT_ID`
 - `IBKR_API_TOKEN`
@@ -108,5 +108,6 @@ npx playwright test
 ## Secret handling
 
 - Keep `.env.example` committed with variable names only.
-- Put local values in `.env.local` only.
+- Put browser-visible local values in `.env.local`.
+- Put worker-style server-only values in `.dev.vars` or `.dev.vars.local` when that matches your local setup.
 - Do not commit raw credentials, tokens, or private operator notes.
