@@ -1,23 +1,82 @@
 # Codex Cloud Environment Baseline
 
-This document defines the default Codex Cloud runtime for `tinyfish-remora`.
+This document defines the single recommended Codex Cloud environment for `tinyfish-remora`.
 
-## Runtime
+## Cloud runtime
 
-- **Node.js**: `22.13.1` (or the nearest available Node 22 runtime in Codex Cloud)
+- **Node.js**: `22.x`
 - **Package manager**: npm (lockfile committed)
-- **Setup script**: `npm ci`
-- **Maintenance script**: `npm ci`
+- **Agent internet access**: **Off** by default
 
-## Network posture
+## One-environment recommendation
 
-- **Default internet access during agent phase**: **Off**
-- If a task requires external access, enable the smallest domain allowlist that unblocks the task.
-- Prefer safe read methods (documentation lookups, metadata fetches) over write operations.
+Use one reusable Codex Cloud environment for the repo and add secrets only when the active task needs them.
 
-## Standard repository bootstrap
+### Non-secret environment variables
 
-Run from the repository root:
+Set these once:
+
+```bash
+CI=1
+NEXT_TELEMETRY_DISABLED=1
+PORT=3000
+```
+
+### Setup script
+
+```bash
+set -euo pipefail
+npm ci
+if grep -q '"@playwright/test"' package.json; then
+  npx playwright install --with-deps chromium
+fi
+```
+
+### Maintenance script
+
+```bash
+set -euo pipefail
+npm ci
+if grep -q '"@playwright/test"' package.json; then
+  npx playwright install --with-deps chromium
+fi
+```
+
+The conditional Playwright install keeps the same environment usable before and after browser-test support lands on `main`.
+
+## Optional integration variables
+
+Only add these when a task needs them. They are not required for the current demo-only app flow.
+
+### TinyFish and review services
+
+- `TINYFISH_RUN_URL`
+- `REVIEW_URL`
+- `OPENAI_API_KEY`
+
+### Auth and persistence
+
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `CLERK_SECRET_KEY`
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+### IBKR
+
+- `IBKR_GATEWAY_URL`
+- `IBKR_ACCOUNT_ID`
+- `IBKR_API_TOKEN`
+
+### Polymarket
+
+- `POLYGON_PRIVATE_KEY`
+- `POLYMARKET_API_KEY`
+- `POLYMARKET_API_SECRET`
+- `POLYMARKET_PASSPHRASE`
+
+## Local bootstrap
+
+For local terminals, not Codex Cloud:
 
 ```bash
 source ~/.nvm/nvm.sh
