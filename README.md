@@ -35,7 +35,7 @@ source ~/.nvm/nvm.sh
 2. Install dependencies:
 
 ```bash
-npm install
+npm ci
 ```
 
 3. Start the app:
@@ -58,7 +58,7 @@ npm run dev
 
 ## Local configuration
 
-The repo runs in demo mode without third-party credentials. When you want to wire live services:
+The repo runs in demo mode without third-party credentials. When you want to wire live services, copy `.env.example` to `.env.local` and fill in values locally.
 
 - Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
 - Supabase: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
@@ -72,3 +72,10 @@ Use these local-only files:
 - `AGENT_PRIVATE.local.md` for local operator instructions, account mappings, and private demo notes
 
 Neither file should be committed.
+
+## Contributor operations
+
+For Codex Cloud setup and parallel agent workflow guidance, use:
+
+- `docs/codex-cloud-environment.md`
+- `docs/codex-parallel-worktrees.md`
