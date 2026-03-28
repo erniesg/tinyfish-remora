@@ -1,28 +1,29 @@
 import { NextResponse } from "next/server";
-
-const REQUIRED_ENV = [
-  "TINYFISH_RUN_URL",
-  "REVIEW_URL",
-  "IBKR_GATEWAY_URL",
-  "IBKR_ACCOUNT_ID",
-] as const;
+import { buildRuntimeStatus } from "@/lib/runtime/env";
 
 export async function GET() {
-  const missingEnv = REQUIRED_ENV.filter((name) => !process.env[name]);
+  const runtime = buildRuntimeStatus();
+  const missingOptionalEnv = Array.from(
+    new Set(runtime.providers.flatMap((provider) => provider.missing).filter(Boolean)),
+  ).sort();
   const now = new Date().toISOString();
-  const degraded = missingEnv.length > 0;
+  const integrationsDegraded = missingOptionalEnv.length > 0;
 
   return NextResponse.json(
     {
-      status: degraded ? "degraded" : "ok",
+      status: "ok",
       timestamp: now,
+      runtimeMode: runtime.mode,
       checks: {
-        environment: degraded ? "missing_required_values" : "ok",
+        environment: "ok",
+        integrations: integrationsDegraded ? "optional_values_missing" : "ok",
       },
-      missingEnv,
+      missingEnv: [] as string[],
+      missingOptionalEnv,
+      warnings: runtime.warnings,
     },
     {
-      status: degraded ? 503 : 200,
+      status: 200,
       headers: {
         "cache-control": "no-store, max-age=0",
       },

@@ -15,6 +15,49 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 
 const DEFAULT_LEVEL: LogLevel = "info";
 
+function safeStringify(value: unknown): string {
+  const seen = new WeakSet<object>();
+
+  try {
+    return JSON.stringify(value, (_key, nextValue) => {
+      if (typeof nextValue === "bigint") {
+        return nextValue.toString();
+      }
+
+      if (nextValue instanceof Error) {
+        return {
+          name: nextValue.name,
+          message: nextValue.message,
+          stack: nextValue.stack,
+        };
+      }
+
+      if (typeof nextValue === "object" && nextValue !== null) {
+        if (seen.has(nextValue)) {
+          return "[Circular]";
+        }
+
+        seen.add(nextValue);
+      }
+
+      return nextValue;
+    }) ?? '{"message":"Failed to serialize log entry"}';
+  } catch (error) {
+    const serializationError =
+      error instanceof Error ? error.message : "Failed to serialize log entry";
+
+    return JSON.stringify({
+      level: "error",
+      timestamp: new Date().toISOString(),
+      event: "logger_serialization_failure",
+      message: "Failed to serialize log entry",
+      context: {
+        serializationError,
+      },
+    });
+  }
+}
+
 function getConfiguredLevel(): LogLevel {
   const level = process.env.LOG_LEVEL?.toLowerCase();
   if (!level || !(level in LEVEL_ORDER)) {
@@ -37,7 +80,7 @@ export function log(level: LogLevel, payload: LogPayload) {
     ...("context" in payload && payload.context ? { context: payload.context } : {}),
   };
 
-  const line = JSON.stringify(entry);
+  const line = safeStringify(entry);
 
   if (level === "error") {
     console.error(line);

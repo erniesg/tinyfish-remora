@@ -32,8 +32,9 @@ Path: `GET /api/health`
 
 Behavior:
 
-- Returns `200` with `{ status: "ok" }` when required deploy env values are present.
-- Returns `503` with `{ status: "degraded" }` and a `missingEnv` list when required values are absent.
+- Returns `200` for demo, hybrid, and live deployments when the app itself is healthy.
+- Surfaces missing provider/integration configuration in `missingOptionalEnv`, `warnings`, and `checks.integrations` so demo/hybrid deployments still pass readiness.
+- Reserves `503` and `missingEnv` for truly mandatory process-level configuration if that is introduced later.
 - Emits `cache-control: no-store, max-age=0` for probe correctness.
 
 ## Structured logging
@@ -43,6 +44,7 @@ Path: `src/lib/observability/logger.ts`
 - Emits newline-delimited JSON via `console.log`/`warn`/`error`.
 - Supports `debug`, `info`, `warn`, and `error` levels.
 - Uses `LOG_LEVEL` to filter lower-priority logs.
+- Safe-serializes circular references, `BigInt`, and `Error` values instead of throwing from the logger.
 
 ## Environment template
 
