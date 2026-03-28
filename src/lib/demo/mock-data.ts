@@ -4,58 +4,33 @@ import type {
   StrategyVersion,
   VenueConnection,
 } from "@/lib/demo/types";
+import { GOVERNMENT_RECIPE_REGISTRY, getRecipeSources } from "@/lib/demo/registry";
 
 function nowIso(offsetMinutes = 0): string {
   return new Date(Date.now() + offsetMinutes * 60_000).toISOString();
 }
 
+const governmentRecipeById = new Map(
+  GOVERNMENT_RECIPE_REGISTRY.map((recipe) => [recipe.id, recipe]),
+);
+
 export const RECIPE_REGISTRY: RecipeDefinition[] = [
   {
+    ...governmentRecipeById.get("cn-policy-lag")!,
     id: "cn-policy-lag",
     title: "Mandarin Policy Lag",
     subtitle: "Official China policy bulletins before ADR repricing",
     description:
       "Scan mainland official releases, preserve the TinyFish stream, and map high-conviction policy language into liquid IBKR names and related prediction markets.",
     category: "government",
-    countries: ["CN"],
-    sources: [
-      {
-        id: "ndrc",
-        name: "National Development and Reform Commission",
-        url: "https://www.ndrc.gov.cn/xxgk/zcfb/",
-        country: "CN",
-        locale: "zh-CN",
-        kind: "official",
-        status: "healthy",
-        cadence: "intra-day",
-      },
-      {
-        id: "mofcom",
-        name: "Ministry of Commerce",
-        url: "https://www.mofcom.gov.cn/article/zcfb/",
-        country: "CN",
-        locale: "zh-CN",
-        kind: "official",
-        status: "healthy",
-        cadence: "daily",
-      },
-      {
-        id: "miit",
-        name: "Ministry of Industry and Information Technology",
-        url: "https://www.miit.gov.cn/jgsj/zcwj/index.html",
-        country: "CN",
-        locale: "zh-CN",
-        kind: "official",
-        status: "fragile",
-        cadence: "daily",
-      },
-    ],
-    supportedVenues: ["ibkr", "polymarket"],
-    readiness: "live-ready",
-    evidenceCount: 18,
+    countries: governmentRecipeById.get("cn-policy-lag")!.countries,
+    sources: getRecipeSources(governmentRecipeById.get("cn-policy-lag")!.sources),
+    supportedVenues: governmentRecipeById.get("cn-policy-lag")!.supportedVenues,
+    readiness: governmentRecipeById.get("cn-policy-lag")!.readiness,
+    evidenceCount: governmentRecipeById.get("cn-policy-lag")!.evidenceCount,
     sampleSignalCount: 42,
-    lastSuccessfulRunAt: nowIso(-43),
-    promptVersion: "govt-cn-v3",
+    lastSuccessfulRunAt: governmentRecipeById.get("cn-policy-lag")!.lastSuccessfulRunAt,
+    promptVersion: governmentRecipeById.get("cn-policy-lag")!.promptVersion,
     scoringModel: "tinyfish-signal-stack:v2",
     strategyOutline:
       "Run official-source fanout, expand bilingual keywords, score tradability, and route the signal to China-sensitive equities and event markets.",
@@ -71,49 +46,26 @@ export const RECIPE_REGISTRY: RecipeDefinition[] = [
       "Keep live size capped until a reviewed signal clears 85/100.",
       "Always preserve streaming URL and raw artifacts for replay.",
     ],
-    knownFailureModes: [
-      "Consent or security redirects on deep links.",
-      "Circular archive pages that require homepage traversal.",
-    ],
+    knownFailureModes: governmentRecipeById.get("cn-policy-lag")!.knownFailureModes,
     suggestedSkills: ["scan", "hunt"],
     defaultVenueBias: "both",
   },
   {
+    ...governmentRecipeById.get("jp-translation-drift")!,
     id: "jp-translation-drift",
     title: "BOJ Translation Drift",
     subtitle: "Japanese official language into exporter and FX-sensitive risk",
     description:
       "Watch Bank of Japan language before English summaries flatten the nuance, then route the reviewed view into FX-sensitive equities on IBKR.",
     category: "government",
-    countries: ["JP"],
-    sources: [
-      {
-        id: "boj",
-        name: "Bank of Japan",
-        url: "https://www.boj.or.jp/en/mopo/index.htm/",
-        country: "JP",
-        locale: "ja-JP",
-        kind: "official",
-        status: "healthy",
-        cadence: "event-driven",
-      },
-      {
-        id: "boj-archive",
-        name: "BOJ Release Archive",
-        url: "https://www.boj.or.jp/en/announcements/release_2026/index.htm/",
-        country: "JP",
-        locale: "ja-JP",
-        kind: "archive",
-        status: "healthy",
-        cadence: "event-driven",
-      },
-    ],
-    supportedVenues: ["ibkr"],
-    readiness: "demo",
-    evidenceCount: 11,
+    countries: governmentRecipeById.get("jp-translation-drift")!.countries,
+    sources: getRecipeSources(governmentRecipeById.get("jp-translation-drift")!.sources),
+    supportedVenues: governmentRecipeById.get("jp-translation-drift")!.supportedVenues,
+    readiness: governmentRecipeById.get("jp-translation-drift")!.readiness,
+    evidenceCount: governmentRecipeById.get("jp-translation-drift")!.evidenceCount,
     sampleSignalCount: 23,
-    lastSuccessfulRunAt: nowIso(-118),
-    promptVersion: "govt-jp-v2",
+    lastSuccessfulRunAt: governmentRecipeById.get("jp-translation-drift")!.lastSuccessfulRunAt,
+    promptVersion: governmentRecipeById.get("jp-translation-drift")!.promptVersion,
     scoringModel: "tinyfish-signal-stack:v2",
     strategyOutline:
       "Compare Japanese phrasing with downstream summaries, score the shift, and map into JPY and exporter proxies.",
@@ -129,59 +81,26 @@ export const RECIPE_REGISTRY: RecipeDefinition[] = [
       "Keep this recipe paper-only until more live evidence lands.",
       "Skip oversized entries near scheduled central-bank events.",
     ],
-    knownFailureModes: [
-      "PDF render timing causing incomplete extractions.",
-      "Archive releases repeating prior language with no tradable delta.",
-    ],
+    knownFailureModes: governmentRecipeById.get("jp-translation-drift")!.knownFailureModes,
     suggestedSkills: ["scan"],
     defaultVenueBias: "ibkr",
   },
   {
+    ...governmentRecipeById.get("eu-energy-watch")!,
     id: "eu-energy-watch",
     title: "EU Energy Ministry Relay",
     subtitle: "Cross-country energy policy watchlist before sector repricing",
     description:
       "Track a multi-country official energy policy watchlist for surprise supply or subsidy language and route only after review confirms the signal is actionable.",
     category: "government",
-    countries: ["DE", "FR", "IT"],
-    sources: [
-      {
-        id: "bmwk",
-        name: "German Federal Ministry for Economic Affairs and Climate Action",
-        url: "https://www.bmwk.de/Redaktion/DE/Pressemitteilungen/",
-        country: "DE",
-        locale: "de-DE",
-        kind: "official",
-        status: "fragile",
-        cadence: "daily",
-      },
-      {
-        id: "ec-energy",
-        name: "European Commission Energy",
-        url: "https://energy.ec.europa.eu/news_en",
-        country: "EU",
-        locale: "en",
-        kind: "official",
-        status: "healthy",
-        cadence: "daily",
-      },
-      {
-        id: "fr-energy",
-        name: "French Ministry for Ecological Transition",
-        url: "https://www.ecologie.gouv.fr/presse",
-        country: "FR",
-        locale: "fr-FR",
-        kind: "official",
-        status: "fragile",
-        cadence: "daily",
-      },
-    ],
-    supportedVenues: ["ibkr"],
-    readiness: "research",
-    evidenceCount: 4,
+    countries: governmentRecipeById.get("eu-energy-watch")!.countries,
+    sources: getRecipeSources(governmentRecipeById.get("eu-energy-watch")!.sources),
+    supportedVenues: governmentRecipeById.get("eu-energy-watch")!.supportedVenues,
+    readiness: governmentRecipeById.get("eu-energy-watch")!.readiness,
+    evidenceCount: governmentRecipeById.get("eu-energy-watch")!.evidenceCount,
     sampleSignalCount: 7,
-    lastSuccessfulRunAt: nowIso(-325),
-    promptVersion: "govt-eu-v1",
+    lastSuccessfulRunAt: governmentRecipeById.get("eu-energy-watch")!.lastSuccessfulRunAt,
+    promptVersion: governmentRecipeById.get("eu-energy-watch")!.promptVersion,
     scoringModel: "tinyfish-signal-stack:v2",
     strategyOutline:
       "Run cross-country official-source scans in parallel, normalize policy language, and hold back from live routing until the evidence set is deeper.",
@@ -197,10 +116,7 @@ export const RECIPE_REGISTRY: RecipeDefinition[] = [
       "Research-only recipe: no live routing.",
       "Require at least two confirming sources before escalating the score.",
     ],
-    knownFailureModes: [
-      "Localized HTML variations breaking parser reuse.",
-      "Small or stale updates that look market-moving but are not.",
-    ],
+    knownFailureModes: governmentRecipeById.get("eu-energy-watch")!.knownFailureModes,
     suggestedSkills: ["scan"],
     defaultVenueBias: "ibkr",
   },
@@ -334,11 +250,11 @@ function recipeToStrategy(
       },
       {
         label: "Route Readiness",
-        score: recipe.readiness === "live-ready" ? 89 : recipe.readiness === "demo" ? 72 : 61,
+        score: recipe.readiness === "live-ready" ? 89 : recipe.readiness === "paper-only" ? 72 : 61,
         note:
           recipe.readiness === "live-ready"
             ? "Live route can be armed after preflight."
-            : recipe.readiness === "research"
+            : recipe.readiness === "research-only"
               ? "Research-only until more evidence is collected."
               : "Demo-safe but not yet approved for live routing.",
       },
