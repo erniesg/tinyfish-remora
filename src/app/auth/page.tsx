@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { ArrowRight, UserRound } from "lucide-react";
 import type { DemoUser } from "@/lib/demo/types";
 
@@ -14,6 +14,11 @@ function makeId(prefix: string): string {
 
 export default function AuthPage() {
   const router = useRouter();
+  const hydrated = useSyncExternalStore(
+    () => () => undefined,
+    () => true,
+    () => false,
+  );
   const [mode, setMode] = useState<"sign-in" | "create">("create");
   const [name, setName] = useState("Ernie Demo");
   const [email, setEmail] = useState("ernie@tinyfish.demo");
@@ -21,6 +26,8 @@ export default function AuthPage() {
   const [riskProfile, setRiskProfile] = useState<DemoUser["riskProfile"]>("balanced");
 
   function persistUser() {
+    if (!hydrated) return;
+
     const user: DemoUser = {
       id: makeId("user"),
       name,
@@ -72,16 +79,23 @@ export default function AuthPage() {
           </div>
         </section>
 
-        <section className="rounded-[2.4rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-8">
+        <section
+          aria-busy={!hydrated}
+          className="rounded-[2.4rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-8"
+        >
           <div className="flex gap-3">
             <button
+              type="button"
               className={`rounded-full px-4 py-2 text-sm ${mode === "create" ? "bg-[var(--signal)] font-semibold text-black" : "border border-[var(--line)] text-[var(--paper)]"}`}
+              disabled={!hydrated}
               onClick={() => setMode("create")}
             >
               Create account
             </button>
             <button
+              type="button"
               className={`rounded-full px-4 py-2 text-sm ${mode === "sign-in" ? "bg-[var(--signal)] font-semibold text-black" : "border border-[var(--line)] text-[var(--paper)]"}`}
+              disabled={!hydrated}
               onClick={() => setMode("sign-in")}
             >
               Sign in
@@ -91,20 +105,36 @@ export default function AuthPage() {
           <div className="mt-8 grid gap-4">
             <label className="space-y-2">
               <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Name</span>
-              <input className="input-shell" value={name} onChange={(event) => setName(event.target.value)} />
+              <input
+                className="input-shell"
+                disabled={!hydrated}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
             </label>
             <label className="space-y-2">
               <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Email</span>
-              <input className="input-shell" value={email} onChange={(event) => setEmail(event.target.value)} />
+              <input
+                className="input-shell"
+                disabled={!hydrated}
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
             </label>
             <label className="space-y-2">
               <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Company</span>
-              <input className="input-shell" value={company} onChange={(event) => setCompany(event.target.value)} />
+              <input
+                className="input-shell"
+                disabled={!hydrated}
+                value={company}
+                onChange={(event) => setCompany(event.target.value)}
+              />
             </label>
             <label className="space-y-2">
               <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Risk profile</span>
               <select
                 className="input-shell"
+                disabled={!hydrated}
                 value={riskProfile}
                 onChange={(event) => setRiskProfile(event.target.value as DemoUser["riskProfile"])}
               >
@@ -115,7 +145,12 @@ export default function AuthPage() {
             </label>
           </div>
 
-          <button className="primary-button mt-8 w-full justify-center" onClick={persistUser}>
+          <button
+            type="button"
+            className="primary-button mt-8 w-full justify-center"
+            disabled={!hydrated}
+            onClick={persistUser}
+          >
             {mode === "create" ? "Create demo account" : "Enter demo cockpit"}
             <ArrowRight className="h-4 w-4" />
           </button>
