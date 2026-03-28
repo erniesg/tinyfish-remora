@@ -1,60 +1,64 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useDeferredValue, useRef, useState, useSyncExternalStore, useTransition } from "react";
-import gsap from "gsap";
-import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
-  Bot,
-  CheckCircle2,
-  Gauge,
-  Globe2,
-  KeyRound,
-  LogOut,
+  ChartNoAxesColumn,
+  CircleDot,
+  Clock3,
+  History,
   Play,
-  Radar,
+  RadioTower,
   RefreshCcw,
-  ScrollText,
-  Shield,
-  Sparkles,
-  TrendingUp,
-  Waves,
-  Workflow,
+  ScanSearch,
+  ShieldCheck,
+  UserRound,
 } from "lucide-react";
-import { RECIPE_REGISTRY, buildSeedConnections, buildSeedPositions, buildSeedStrategies } from "@/lib/demo/mock-data";
-import { assessConnection, getRecipeDefinition } from "@/lib/demo/engine";
+import { ensureDemoAccounts, readDemoSession, resumeDemoAccount } from "@/lib/demo/auth";
+import { RECIPE_REGISTRY } from "@/lib/demo/mock-data";
 import type {
   AgentEvent,
-  ApprovalState,
   DemoUser,
   ExecutionMode,
-  GeneratedStrategyResponse,
-  Position,
-  RecipeDefinition,
+  RawSignal,
+  ReviewedSignal,
   RunLaunchResponse,
   RunRequest,
   RunSummary,
-  StrategyVersion,
-  Venue,
   VenueCandidate,
-  VenueConnection,
 } from "@/lib/demo/types";
 import type { RuntimeStatusResponse } from "@/lib/runtime/types";
 
-gsap.registerPlugin(ScrollTrigger);
-
-const USER_KEY = "tinyfish-remora-user";
-const CONNECTIONS_KEY = "tinyfish-remora-connections";
-const STRATEGIES_KEY = "tinyfish-remora-strategies";
-const POSITIONS_KEY = "tinyfish-remora-positions";
-const EVENTS_KEY = "tinyfish-remora-events";
 const RUNS_KEY = "tinyfish-remora-runs";
+const MAX_HISTORY = 12;
 
-function readLocalStorage<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
+type StoredRun = RunSummary & {
+  events: AgentEvent[];
+  runtimeWarnings: string[];
+};
+
+const COUNTRY_LABELS: Record<string, string> = {
+  CN: "China",
+  DE: "Germany",
+  EU: "Europe",
+  FR: "France",
+  GLOBAL: "Global",
+  IT: "Italy",
+  JP: "Japan",
+  US: "United States",
+};
+
+function hasWindow(): boolean {
+  return typeof window !== "undefined";
+}
+
+function readJson<T>(key: string, fallback: T): T {
+  if (!hasWindow()) return fallback;
+
   const raw = window.localStorage.getItem(key);
   if (!raw) return fallback;
+
   try {
     return JSON.parse(raw) as T;
   } catch {
@@ -62,432 +66,318 @@ function readLocalStorage<T>(key: string, fallback: T): T {
   }
 }
 
-function writeLocalStorage<T>(key: string, value: T): void {
-  if (typeof window === "undefined") return;
+function writeJson<T>(key: string, value: T): void {
+  if (!hasWindow()) return;
   window.localStorage.setItem(key, JSON.stringify(value));
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(value);
+function formatCountry(code: string): string {
+  return COUNTRY_LABELS[code] ?? code;
 }
 
-function formatPercent(value: number): string {
-  return `${value.toFixed(0)}%`;
+function formatRelative(iso: string | undefined): string {
+  if (!iso) return "Not yet";
+
+  const deltaMs = Date.now() - new Date(iso).getTime();
+  const minutes = Math.max(1, Math.round(deltaMs / 60_000));
+
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
 }
 
-function formatTimestamp(value: string | undefined): string {
-  if (!value) return "No runs yet";
-  return new Date(value).toLocaleString([], {
-    month: "short",
-    day: "numeric",
+function formatTimestamp(iso: string | undefined): string {
+  if (!iso) return "Pending";
+
+  return new Intl.DateTimeFormat("en", {
     hour: "numeric",
     minute: "2-digit",
-  });
+    month: "short",
+    day: "numeric",
+  }).format(new Date(iso));
 }
 
-function runProgressLabel(progress: number): string {
-  if (progress < 14) return "boot";
-  if (progress < 46) return "collect";
-  if (progress < 74) return "review";
-  if (progress < 94) return "decide";
-  return "execute";
+function formatProviderLabel(provider: string): string {
+  if (provider === "ibkr") return "IBKR";
+  if (provider === "polymarket") return "Polymarket";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
-function maskValue(value: string): string {
-  if (!value) return "";
-  if (value.length <= 6) return "•".repeat(value.length);
-  return `${value.slice(0, 4)}••••${value.slice(-2)}`;
+function formatPhase(phase: AgentEvent["phase"]): string {
+  return phase.toLowerCase().replaceAll("_", " ");
 }
 
-function upsertUnique<T>(
-  items: T[],
-  nextItem: T,
-  getKey: (item: T) => string,
-): T[] {
-  const index = items.findIndex((item) => getKey(item) === getKey(nextItem));
-  if (index === -1) return [nextItem, ...items];
-  const copy = [...items];
-  copy[index] = nextItem;
-  return copy;
+function makeSelection(
+  values: string[],
+  item: string,
+  fallback: string[],
+  allowEmpty = false,
+): string[] {
+  const exists = values.includes(item);
+  const nextValues = exists
+    ? values.filter((value) => value !== item)
+    : [...values, item];
+
+  if (allowEmpty || nextValues.length > 0) return nextValues;
+  return fallback;
 }
 
-function consumeSse(url: string, onEvent: (event: AgentEvent) => void): Promise<void> {
-  return fetch(url, { method: "GET", cache: "no-store" }).then(async (response) => {
-    if (!response.ok || !response.body) {
-      throw new Error(`SSE stream failed with ${response.status}`);
-    }
+function mergeByKey<T>(items: T[], nextItem: T, getKey: (item: T) => string): T[] {
+  const key = getKey(nextItem);
+  const index = items.findIndex((item) => getKey(item) === key);
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+  if (index === -1) return [...items, nextItem];
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      while (buffer.includes("\n\n")) {
-        const boundary = buffer.indexOf("\n\n");
-        const chunk = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        const dataLine = chunk
-          .split("\n")
-          .find((line) => line.startsWith("data: "));
-        if (!dataLine) continue;
-        onEvent(JSON.parse(dataLine.slice(6)) as AgentEvent);
-      }
-    }
-  });
+  return items.map((item, currentIndex) => (currentIndex === index ? nextItem : item));
 }
 
-function targetVenues(recipe: RecipeDefinition, preferredVenue: VenueCandidate): Venue[] {
-  if (preferredVenue === "both" || !preferredVenue) return recipe.supportedVenues;
-  return recipe.supportedVenues.filter((venue) => venue === preferredVenue);
+function upsertRun(runs: StoredRun[], nextRun: StoredRun): StoredRun[] {
+  return [nextRun, ...runs.filter((run) => run.id !== nextRun.id)].slice(0, MAX_HISTORY);
 }
 
-function toneForReadiness(readiness: RecipeDefinition["readiness"]): string {
-  if (readiness === "live-ready") return "bg-emerald-500/14 text-emerald-200";
-  if (readiness === "research") return "bg-amber-500/14 text-amber-200";
-  return "bg-white/10 text-[var(--muted)]";
+function createPendingRun(launch: RunLaunchResponse): StoredRun {
+  const startedAt = new Date().toISOString();
+
+  return {
+    id: launch.runId,
+    label: launch.label,
+    request: launch.request,
+    recipeId: launch.request.recipeId,
+    strategyId: launch.request.strategyId,
+    mode: launch.request.mode,
+    status: "running",
+    progress: 4,
+    phase: "STARTED",
+    startedAt,
+    lastMessage: "Run queued.",
+    streamingUrl: launch.streamingUrl,
+    rawSignals: [],
+    reviewedSignals: [],
+    intents: [],
+    receipts: [],
+    fallbackState: undefined,
+    runtimeMode: launch.runtimeMode,
+    events: [],
+    runtimeWarnings: launch.runtimeWarnings ?? [],
+  };
 }
 
-function toneForConnection(status: VenueConnection["status"]): string {
-  if (status === "ready") return "bg-emerald-500/14 text-emerald-200";
-  if (status === "warning") return "bg-amber-500/14 text-amber-200";
-  return "bg-white/8 text-[var(--muted)]";
+function applyEvent(run: StoredRun, event: AgentEvent): StoredRun {
+  const rawSignals = event.rawSignal
+    ? mergeByKey(run.rawSignals, event.rawSignal, (signal) => signal.id)
+    : run.rawSignals;
+
+  const reviewedSignals = event.reviewedSignal
+    ? mergeByKey(
+        run.reviewedSignals,
+        event.reviewedSignal,
+        (signal) => `${signal.fingerprint}:${signal.source}`,
+      )
+    : run.reviewedSignals;
+
+  const intents = event.intent
+    ? mergeByKey(
+        run.intents,
+        event.intent,
+        (intent) => `${intent.reviewFingerprint}:${intent.venue}:${intent.symbolOrToken}`,
+      )
+    : run.intents;
+
+  const receipts = event.receipt
+    ? mergeByKey(run.receipts, event.receipt, (receipt) => receipt.receiptId)
+    : run.receipts;
+
+  const events = mergeByKey(run.events, event, (entry) => entry.id);
+  const isFinal = event.phase === "COMPLETE" || event.phase === "BLOCKED";
+
+  return {
+    ...run,
+    recipeId: event.recipeId ?? run.recipeId,
+    strategyId: event.strategyId ?? run.strategyId,
+    status: event.phase === "BLOCKED" ? "blocked" : isFinal ? "complete" : "running",
+    progress: isFinal ? 100 : event.progress,
+    phase: event.phase,
+    completedAt: isFinal ? event.timestamp : run.completedAt,
+    lastMessage: event.message,
+    rawSignals,
+    reviewedSignals,
+    intents,
+    receipts,
+    events,
+    fallbackState:
+      event.phase === "BLOCKED"
+        ? "blocked"
+        : isFinal && rawSignals.length === 0
+          ? "empty"
+          : run.fallbackState,
+  };
 }
 
-function toneForApproval(approvalState: ApprovalState): string {
-  if (approvalState === "live-armed") return "bg-emerald-500/14 text-emerald-200";
-  if (approvalState === "live-candidate") return "bg-amber-500/14 text-amber-200";
-  return "bg-white/8 text-[var(--muted)]";
+function RuntimePill({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "accent" | "success" | "warning";
+}) {
+  const toneClass =
+    tone === "accent"
+      ? "border-[rgba(255,105,71,0.35)] bg-[rgba(255,105,71,0.08)] text-[var(--paper)]"
+      : tone === "success"
+        ? "border-[rgba(125,211,168,0.3)] bg-[rgba(125,211,168,0.08)] text-[var(--paper)]"
+        : tone === "warning"
+          ? "border-[rgba(255,214,120,0.26)] bg-[rgba(255,214,120,0.08)] text-[var(--paper)]"
+          : "border-[var(--line)] bg-white/[0.03] text-[var(--muted)]";
+
+  return (
+    <div className={`rounded-full border px-3 py-1.5 text-xs ${toneClass}`}>
+      <span className="uppercase tracking-[0.24em] text-[0.68rem] text-[var(--muted)]">
+        {label}
+      </span>
+      <span className="ml-2 font-medium text-[var(--paper)]">{value}</span>
+    </div>
+  );
 }
 
 export function DashboardShell() {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const hydrated = useSyncExternalStore(
-    () => () => undefined,
-    () => true,
-    () => false,
+  const [profile, setProfile] = useState<DemoUser | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeStatusResponse | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [runs, setRuns] = useState<StoredRun[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [launchPending, setLaunchPending] = useState(false);
+  const [loadedRuns, setLoadedRuns] = useState(false);
+  const [recipeId, setRecipeId] = useState(RECIPE_REGISTRY[0]?.id ?? "");
+  const [mode, setMode] = useState<ExecutionMode>("paper");
+  const [selectedCountries, setSelectedCountries] = useState<string[]>(
+    RECIPE_REGISTRY[0]?.countries ?? [],
   );
-  const [user, setUser] = useState<DemoUser | null>(() => readLocalStorage<DemoUser | null>(USER_KEY, null));
-  const [connections, setConnections] = useState<VenueConnection[]>(() =>
-    readLocalStorage(CONNECTIONS_KEY, buildSeedConnections()).map(assessConnection),
-  );
-  const [strategies, setStrategies] = useState<StrategyVersion[]>(() =>
-    readLocalStorage(STRATEGIES_KEY, buildSeedStrategies()),
-  );
-  const [positions, setPositions] = useState<Position[]>(() =>
-    readLocalStorage(POSITIONS_KEY, buildSeedPositions()),
-  );
-  const [events, setEvents] = useState<AgentEvent[]>(() =>
-    readLocalStorage<AgentEvent[]>(EVENTS_KEY, []),
-  );
-  const [runs, setRuns] = useState<RunSummary[]>(() =>
-    readLocalStorage<RunSummary[]>(RUNS_KEY, []),
-  );
-  const [selectedRunId, setSelectedRunId] = useState<string>("");
-  const [launchSurface, setLaunchSurface] = useState<"recipe" | "agent">("recipe");
-  const [launchMode, setLaunchMode] = useState<ExecutionMode>("paper");
-  const [selectedRecipeId, setSelectedRecipeId] = useState(RECIPE_REGISTRY[0].id);
-  const [selectedCountries, setSelectedCountries] = useState<string[]>(RECIPE_REGISTRY[0].countries);
   const [selectedSources, setSelectedSources] = useState<string[]>(
-    RECIPE_REGISTRY[0].sources.slice(0, 2).map((source) => source.id),
+    RECIPE_REGISTRY[0]?.sources.map((source) => source.id) ?? [],
   );
-  const [preferredVenue, setPreferredVenue] = useState<VenueCandidate>(RECIPE_REGISTRY[0].defaultVenueBias);
-  const [objective, setObjective] = useState(
-    "Generate a retail-safe thesis that hunts government policy lag, scores the signal, and routes the best instrument to paper first."
+  const [preferredVenue, setPreferredVenue] = useState<VenueCandidate>(
+    RECIPE_REGISTRY[0]?.defaultVenueBias ?? "both",
   );
-  const deferredObjective = useDeferredValue(objective);
-  const [riskProfile, setRiskProfile] = useState<DemoUser["riskProfile"]>(
-    () => readLocalStorage<DemoUser | null>(USER_KEY, null)?.riskProfile ?? "balanced",
-  );
-  const [generated, setGenerated] = useState<GeneratedStrategyResponse["draft"] | null>(null);
-  const [generatedReasoning, setGeneratedReasoning] = useState<string[]>([]);
-  const [killSwitch, setKillSwitch] = useState(false);
-  const [runError, setRunError] = useState("");
-  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
-  const [isGenerating, startGenerating] = useTransition();
-  const [isLaunching, setIsLaunching] = useState(false);
 
-  const activeRecipe = getRecipeDefinition(selectedRecipeId);
+  const streamRef = useRef<EventSource | null>(null);
+  const ledgerRef = useRef<HTMLDivElement | null>(null);
+
+  const recipe = RECIPE_REGISTRY.find((entry) => entry.id === recipeId) ?? RECIPE_REGISTRY[0];
   const selectedRun = runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null;
-  const selectedRunEvents = selectedRun ? events.filter((event) => event.runId === selectedRun.id) : [];
+  const activeRun = runs.find((run) => run.status === "running") ?? null;
+  const liveModeWarning =
+    mode === "live" && runtime?.mode !== "live"
+      ? "Live mode is armed in the UI, but missing providers can still force demo fallback."
+      : mode === "paper"
+        ? "Paper mode records decisions and receipts without pushing live broker orders."
+        : "All provider lanes are enabled for live routing.";
 
   useEffect(() => {
-    if (!rootRef.current) return;
+    const accounts = ensureDemoAccounts();
+    const session = readDemoSession() ?? resumeDemoAccount(accounts[0].id);
+    const storedRuns = readJson<StoredRun[]>(RUNS_KEY, []);
 
-    const context = gsap.context(() => {
-      gsap.from(".cockpit-reveal", {
-        y: 28,
-        opacity: 0,
-        duration: 0.8,
-        stagger: 0.08,
-        ease: "power3.out",
-      });
+    setProfile(session);
+    setRuns(storedRuns);
+    setSelectedRunId(storedRuns[0]?.id ?? null);
+    setLoadedRuns(true);
 
-      gsap.from(".section-reveal", {
-        scrollTrigger: {
-          trigger: ".section-reveal",
-          start: "top 78%",
-        },
-        y: 36,
-        opacity: 0,
-        duration: 0.85,
-        stagger: 0.12,
-        ease: "power3.out",
-      });
-    }, rootRef);
-
-    return () => context.revert();
+    return () => {
+      streamRef.current?.close();
+    };
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
-    writeLocalStorage(CONNECTIONS_KEY, connections);
-  }, [connections, hydrated]);
+    setSelectedCountries(recipe.countries);
+    setSelectedSources(recipe.sources.map((source) => source.id));
+    setPreferredVenue(recipe.defaultVenueBias);
+  }, [recipe.id, recipe.countries, recipe.defaultVenueBias, recipe.sources]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    writeLocalStorage(STRATEGIES_KEY, strategies);
-  }, [strategies, hydrated]);
+    if (!loadedRuns) return;
+    writeJson(RUNS_KEY, runs);
+  }, [loadedRuns, runs]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    writeLocalStorage(POSITIONS_KEY, positions);
-  }, [positions, hydrated]);
+    if (!runs.length) {
+      setSelectedRunId(null);
+      return;
+    }
 
-  useEffect(() => {
-    if (!hydrated) return;
-    writeLocalStorage(EVENTS_KEY, events);
-  }, [events, hydrated]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    writeLocalStorage(RUNS_KEY, runs);
-  }, [runs, hydrated]);
-
-  useEffect(() => {
-    setSelectedCountries(activeRecipe.countries);
-    setSelectedSources(activeRecipe.sources.slice(0, 2).map((source) => source.id));
-    setPreferredVenue(
-      activeRecipe.supportedVenues.length === 1 ? activeRecipe.supportedVenues[0] : activeRecipe.defaultVenueBias,
-    );
-  }, [activeRecipe]);
-
-  useEffect(() => {
-    if (!selectedRunId && runs[0]) {
+    if (!selectedRunId || !runs.some((run) => run.id === selectedRunId)) {
       setSelectedRunId(runs[0].id);
     }
   }, [runs, selectedRunId]);
 
   useEffect(() => {
-    let active = true;
+    if (!selectedRun) return;
+    ledgerRef.current?.scrollTo({
+      top: ledgerRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [selectedRun]);
 
-    fetch("/api/runtime/status", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        return (await response.json()) as RuntimeStatusResponse;
-      })
-      .then((payload) => {
-        if (!active || !payload) return;
-        setRuntimeStatus(payload);
-      })
-      .catch(() => undefined);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRuntimeStatus() {
+      try {
+        const response = await fetch("/api/runtime/status", {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error("Runtime status request failed.");
+        }
+
+        const nextRuntime = (await response.json()) as RuntimeStatusResponse;
+
+        if (!cancelled) {
+          setRuntime(nextRuntime);
+          setRuntimeError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setRuntime(null);
+          setRuntimeError("Runtime status unavailable.");
+        }
+      }
+    }
+
+    void loadRuntimeStatus();
+    const interval = window.setInterval(() => {
+      void loadRuntimeStatus();
+    }, 30_000);
 
     return () => {
-      active = false;
+      cancelled = true;
+      window.clearInterval(interval);
     };
   }, []);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    const interval = window.setInterval(() => {
-      setPositions((current) =>
-        current.map((position, index) => {
-          if (position.status !== "open") return position;
-          const direction = index % 2 === 0 ? 1 : -1;
-          const basisMove = position.venue === "ibkr" ? 0.11 : 0.01;
-          const nextMark = Number((position.markPrice + direction * basisMove).toFixed(position.venue === "ibkr" ? 2 : 3));
-          return {
-            ...position,
-            markPrice: nextMark,
-            updatedAt: new Date().toISOString(),
-          };
-        }),
-      );
-    }, 4000);
+  async function launchRun(requestOverride?: Partial<RunRequest>) {
+    streamRef.current?.close();
+    setLaunchPending(true);
+    setLaunchError(null);
 
-    return () => window.clearInterval(interval);
-  }, [hydrated]);
-
-  function recordEvent(event: AgentEvent) {
-    setEvents((current) => [event, ...current].slice(0, 90));
-    setRuns((current) => {
-      const runIndex = current.findIndex((run) => run.id === event.runId);
-      if (runIndex === -1) return current;
-
-      const existing = current[runIndex];
-      const nextRun: RunSummary = {
-        ...existing,
-        progress: event.progress,
-        phase: event.phase,
-        lastMessage: event.message,
-        streamingUrl:
-          typeof event.meta?.streaming_url === "string" ? event.meta.streaming_url : existing.streamingUrl,
-        status:
-          event.phase === "BLOCKED"
-            ? "blocked"
-            : event.phase === "COMPLETE"
-              ? existing.status === "blocked"
-                ? "blocked"
-                : "complete"
-              : "running",
-        completedAt: event.phase === "COMPLETE" ? event.timestamp : existing.completedAt,
-        rawSignals: event.rawSignal
-          ? upsertUnique(existing.rawSignals, event.rawSignal, (item) => item.fingerprint).slice(0, 8)
-          : existing.rawSignals,
-        reviewedSignals: event.reviewedSignal
-          ? upsertUnique(existing.reviewedSignals, event.reviewedSignal, (item) => item.fingerprint).slice(0, 8)
-          : existing.reviewedSignals,
-        intents: event.intent
-          ? upsertUnique(existing.intents, event.intent, (item) => `${item.reviewFingerprint}:${item.venue}`).slice(0, 6)
-          : existing.intents,
-        receipts: event.receipt
-          ? upsertUnique(existing.receipts, event.receipt, (item) => item.receiptId).slice(0, 6)
-          : existing.receipts,
-        fallbackState:
-          event.phase === "BLOCKED"
-            ? "blocked"
-            : event.meta?.fallback_state === "empty"
-              ? "empty"
-              : existing.fallbackState,
-      };
-
-      const copy = [...current];
-      copy[runIndex] = nextRun;
-      return copy;
-    });
-
-    if (event.receipt && event.position && event.receipt.status !== "preview") {
-      const nextPosition = event.position;
-      setPositions((current) => {
-        const existingIndex = current.findIndex(
-          (item) =>
-            item.symbolOrToken === nextPosition.symbolOrToken &&
-            item.venue === nextPosition.venue,
-        );
-        if (existingIndex === -1) return [nextPosition, ...current].slice(0, 14);
-        const copy = [...current];
-        copy[existingIndex] = nextPosition;
-        return copy;
-      });
-    }
-
-    if (event.phase === "COMPLETE") {
-      setStrategies((current) =>
-        current.map((strategy) =>
-          strategy.id === event.strategyId
-            ? {
-                ...strategy,
-                lastRunSummary: event.message,
-              }
-            : strategy,
-        ),
-      );
-    }
-  }
-
-  if (!hydrated) {
-    return (
-      <div className="mx-auto flex min-h-[70vh] w-full max-w-7xl items-center justify-center px-5 py-16 sm:px-8">
-        <div className="rounded-[2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] px-8 py-6 text-lg text-[var(--muted)]">
-          Loading overview cockpit...
-        </div>
-      </div>
-    );
-  }
-
-  const runtimeManagedConnections = Boolean(runtimeStatus && runtimeStatus.mode !== "demo");
-  const effectiveConnections =
-    runtimeManagedConnections && runtimeStatus ? runtimeStatus.connections : connections;
-  const readyConnections = effectiveConnections.filter((connection) => connection.status === "ready").length;
-  const liveWarnings = effectiveConnections.filter(
-    (connection) => connection.mode === "live" && connection.status === "warning",
-  ).length;
-  const totalExposure = positions.reduce((sum, position) => sum + position.markPrice * position.quantity, 0);
-  const unrealizedPnl = positions.reduce(
-    (sum, position) => sum + (position.markPrice - position.entryPrice) * position.quantity,
-    0,
-  );
-  const activityPreview = selectedRunEvents.slice(0, 6);
-  const selectedReview = selectedRun?.reviewedSignals[0] ?? null;
-  const activeVenues = targetVenues(activeRecipe, preferredVenue);
-  const launchConnections = activeVenues
-    .map((venue) => effectiveConnections.find((connection) => connection.venue === venue && connection.mode === launchMode))
-    .filter((connection): connection is VenueConnection => Boolean(connection));
-  const liveLaunchBlocked =
-    launchMode === "live" &&
-    (activeRecipe.readiness !== "live-ready" ||
-      launchConnections.some((connection) => connection.status === "missing"));
-  const liveLaunchWarning =
-    launchMode === "live" &&
-    !liveLaunchBlocked &&
-    launchConnections.some((connection) => connection.status === "warning");
-
-  function updateConnectionField(connectionId: string, field: string, value: string) {
-    setConnections((current) =>
-      current.map((connection) => {
-        if (connection.id !== connectionId) return connection;
-        return assessConnection({
-          ...connection,
-          fields: {
-            ...connection.fields,
-            [field]: value,
-          },
-        });
-      }),
-    );
-  }
-
-  function toggleCountry(country: string) {
-    setSelectedCountries((current) =>
-      current.includes(country)
-        ? current.filter((entry) => entry !== country)
-        : [...current, country],
-    );
-  }
-
-  function toggleSource(sourceId: string) {
-    setSelectedSources((current) =>
-      current.includes(sourceId)
-        ? current.filter((entry) => entry !== sourceId)
-        : [...current, sourceId],
-    );
-  }
-
-  function signOut() {
-    window.localStorage.removeItem(USER_KEY);
-    setUser(null);
-  }
-
-  function focusLaunch(surface: "recipe" | "agent") {
-    setLaunchSurface(surface);
-    document.getElementById("launch-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  async function launchRequest(request: Partial<RunRequest>, label: string) {
-    if (killSwitch) {
-      setRunError("Kill switch is active. Disable it before launching a new run.");
-      return;
-    }
-
-    setRunError("");
-    setIsLaunching(true);
+    const requestBody: Partial<RunRequest> = {
+      recipeId: recipe.id,
+      countries: selectedCountries,
+      sources: selectedSources,
+      mode,
+      execute: true,
+      previewOnly: false,
+      force: true,
+      preferredVenue,
+      ...requestOverride,
+    };
 
     try {
       const response = await fetch("/api/demo/run", {
@@ -495,1231 +385,737 @@ export function DashboardShell() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(request),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
-        throw new Error(`Run launch failed with ${response.status}`);
+        throw new Error("Run launch failed.");
       }
 
       const launch = (await response.json()) as RunLaunchResponse;
+      const pendingRun = createPendingRun(launch);
+
+      setRuns((currentRuns) => upsertRun(currentRuns, pendingRun));
       setSelectedRunId(launch.runId);
-      const nextRun: RunSummary = {
-        id: launch.runId,
-        label,
-        request: launch.request,
-        recipeId: launch.request.recipeId,
-        strategyId: launch.request.strategyId,
-        mode: launch.request.mode,
-        status: "running",
-        progress: 0,
-        phase: "STARTED",
-        startedAt: new Date().toISOString(),
-        lastMessage: "Queued for stream startup...",
-        streamingUrl: launch.streamingUrl,
-        rawSignals: [],
-        reviewedSignals: [],
-        intents: [],
-        receipts: [],
-        runtimeMode: launch.runtimeMode,
-      };
-      setRuns((current) => [nextRun, ...current].slice(0, 12));
-
-      await consumeSse(launch.streamUrl, recordEvent);
-    } catch (error) {
-      setRunError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsLaunching(false);
-    }
-  }
-
-  async function launchRecipeRun() {
-    if (selectedSources.length === 0) {
-      setRunError("Select at least one source before running a recipe.");
-      return;
-    }
-
-    if (launchMode === "live") {
-      if (liveLaunchBlocked) {
-        setRunError(
-          activeRecipe.readiness !== "live-ready"
-            ? `${activeRecipe.title} is ${activeRecipe.readiness}. Keep it in paper for now.`
-            : "Live routing is missing one or more required venue credentials.",
-        );
-        return;
-      }
-
-      const proceed = window.confirm(
-        `${activeRecipe.title} will route in live mode. Confirm that preflight is acceptable and you want to continue.`,
+      setRuntime((currentRuntime) =>
+        currentRuntime
+          ? {
+              ...currentRuntime,
+              mode: launch.runtimeMode ?? currentRuntime.mode,
+              warnings: launch.runtimeWarnings ?? currentRuntime.warnings,
+            }
+          : currentRuntime,
       );
-      if (!proceed) return;
-    }
 
-    await launchRequest(
-      {
-        recipeId: activeRecipe.id,
-        countries: selectedCountries,
-        sources: selectedSources,
-        skills: activeRecipe.suggestedSkills,
-        mode: launchMode,
-        execute: true,
-        previewOnly: false,
-        force: true,
-        promptVersion: activeRecipe.promptVersion,
-        preferredVenue,
-      },
-      activeRecipe.title,
-    );
-  }
+      const source = new EventSource(launch.streamUrl);
+      streamRef.current = source;
 
-  function generateStrategy() {
-    startGenerating(async () => {
-      const response = await fetch("/api/demo/generate-strategy", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          objective,
-          riskProfile,
-          preferredVenue,
-        }),
-      });
+      source.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data) as AgentEvent;
 
-      if (!response.ok) {
-        setRunError(`Draft generation failed with ${response.status}`);
-        return;
-      }
+          setRuns((currentRuns) =>
+            upsertRun(
+              currentRuns,
+              applyEvent(
+                currentRuns.find((run) => run.id === launch.runId) ?? pendingRun,
+                event,
+              ),
+            ),
+          );
 
-      const payload = (await response.json()) as GeneratedStrategyResponse;
-      setGenerated(payload.draft);
-      setGeneratedReasoning(payload.reasoning);
-      setLaunchSurface("agent");
-    });
-  }
+          if (event.phase === "COMPLETE" || event.phase === "BLOCKED") {
+            source.close();
+            if (streamRef.current === source) {
+              streamRef.current = null;
+            }
+          }
+        } catch {
+          setLaunchError("The run stream returned an unreadable event.");
+          source.close();
+          if (streamRef.current === source) {
+            streamRef.current = null;
+          }
+        }
+      };
 
-  function saveGeneratedStrategy() {
-    if (!generated) return;
-    const recipe = getRecipeDefinition(generated.runConfig.recipeId);
-
-    const nextStrategy: StrategyVersion = {
-      ...generated,
-      version: 1,
-      guardrails: recipe.guardrails,
-      readiness: recipe.readiness,
-      lastRunSummary: "Draft saved. No runs yet.",
-    };
-
-    setStrategies((current) => [nextStrategy, ...current]);
-    setGenerated(null);
-    setGeneratedReasoning([]);
-  }
-
-  async function runGeneratedDraft() {
-    if (!generated) return;
-    await launchRequest(
-      {
-        ...generated.runConfig,
-        strategyId: generated.id,
-        strategyBrief: generated.objective,
-        mode: "paper",
-      },
-      generated.name,
-    );
-  }
-
-  function toggleStrategyApproval(strategyId: string) {
-    setStrategies((current) =>
-      current.map((strategy) => {
-        if (strategy.id !== strategyId) return strategy;
-        if (strategy.readiness !== "live-ready") {
-          setRunError(`${strategy.name} is ${strategy.readiness}. Keep it on paper.`);
-          return strategy;
+      source.onerror = () => {
+        source.close();
+        if (streamRef.current === source) {
+          streamRef.current = null;
         }
 
-        const nextApproval =
-          strategy.approvalState === "live-armed" ? "paper" : "live-armed";
+        setRuns((currentRuns) => {
+          const currentRun = currentRuns.find((run) => run.id === launch.runId);
+          if (!currentRun || currentRun.status !== "running") return currentRuns;
 
-        return {
-          ...strategy,
-          approvalState: nextApproval,
-          runConfig: {
-            ...strategy.runConfig,
-            mode: nextApproval === "live-armed" ? "live" : "paper",
-          },
-        };
-      }),
-    );
+          return upsertRun(currentRuns, {
+            ...currentRun,
+            status: "blocked",
+            phase: "BLOCKED",
+            progress: 100,
+            completedAt: new Date().toISOString(),
+            lastMessage: "Stream closed before the run completed.",
+          });
+        });
+      };
+    } catch (error) {
+      setLaunchError(error instanceof Error ? error.message : "Run launch failed.");
+    } finally {
+      setLaunchPending(false);
+    }
   }
 
-  async function runStrategy(strategy: StrategyVersion) {
-    if (strategy.runConfig.mode === "live") {
-      const recipe = getRecipeDefinition(strategy.runConfig.recipeId);
-      const strategyVenues = targetVenues(recipe, strategy.runConfig.preferredVenue ?? recipe.defaultVenueBias);
-      const blocked = strategyVenues.some((venue) =>
-        effectiveConnections.some(
-          (connection) =>
-            connection.venue === venue &&
-            connection.mode === "live" &&
-            connection.status === "missing",
-        ),
-      );
-
-      if (blocked) {
-        setRunError("Live routing is missing one or more required venue credentials.");
-        return;
-      }
-
-      const proceed = window.confirm(
-        `${strategy.name} is armed for live routing. Continue?`,
-      );
-      if (!proceed) return;
-    }
-
-    await launchRequest(
-      {
-        ...strategy.runConfig,
-        strategyId: strategy.id,
-        strategyBrief: strategy.objective,
-      },
-      strategy.name,
-    );
+  function replayRun(run: StoredRun) {
+    void launchRun(run.request);
   }
 
   return (
-    <div ref={rootRef} className="relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(230,59,46,0.2),_transparent_38%),radial-gradient(circle_at_top_right,_rgba(116,160,255,0.12),_transparent_34%)]" />
-
-      <div className="mx-auto flex w-full max-w-[92rem] flex-col gap-8 px-4 py-6 sm:px-6 xl:px-8">
-        <header className="cockpit-reveal flex items-center justify-between rounded-full border border-[var(--line)] bg-black/25 px-4 py-3 backdrop-blur-xl">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[rgba(255,255,255,0.16)] bg-[var(--signal)] text-xs font-bold uppercase tracking-[0.2em] text-black">
-              TF
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-[0.28em] text-[var(--muted)]">Retail investor cockpit</div>
-              <div className="text-sm font-medium text-[var(--paper)]">tinyfish-remora</div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Link href="/" className="hidden rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--paper)] sm:inline-flex">
-              Landing
-            </Link>
-            {user ? (
-              <button className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--paper)]" onClick={signOut}>
-                <LogOut className="h-4 w-4" />
-                {user.name}
-              </button>
-            ) : (
-              <Link href="/auth" className="rounded-full bg-[var(--signal)] px-4 py-2 text-sm font-semibold text-black">
-                Demo sign in
-              </Link>
-            )}
-          </div>
-        </header>
-
-        <section className="cockpit-reveal relative min-h-[calc(100dvh-8rem)] overflow-hidden rounded-[2.8rem] border border-[var(--line)] bg-[rgba(7,7,8,0.72)] p-5 shadow-[0_38px_120px_rgba(0,0,0,0.45)] backdrop-blur-xl sm:p-8">
-          <div className="pointer-events-none absolute inset-0 opacity-60">
-            <div className="absolute left-0 top-0 h-60 w-60 rounded-full bg-[rgba(230,59,46,0.18)] blur-3xl" />
-            <div className="absolute bottom-0 right-0 h-72 w-72 rounded-full bg-[rgba(70,110,210,0.12)] blur-3xl" />
-          </div>
-
-          <div className="relative grid gap-8 xl:grid-cols-[0.88fr_1.12fr] xl:items-stretch">
-            <div className="flex flex-col justify-between gap-8">
-              <div className="space-y-6">
-                <div className="inline-flex items-center gap-3 rounded-full border border-[rgba(230,59,46,0.28)] bg-[rgba(230,59,46,0.1)] px-4 py-2 text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
-                  <Radar className="h-4 w-4 text-[var(--signal)]" />
-                  Streaming government scans and agent theses
-                </div>
-
-                <div>
-                  <div className="text-xs uppercase tracking-[0.28em] text-[var(--muted)]">Brand-first overview cockpit</div>
-                  <h1 className="mt-4 font-[var(--font-display)] text-[clamp(4.4rem,12vw,8rem)] leading-[0.86] tracking-[-0.05em] text-[var(--paper)]">
-                    tinyfish-remora
-                  </h1>
-                  <p className="mt-5 max-w-2xl text-lg leading-8 text-[var(--muted)] sm:text-xl">
-                    Run proven government recipes or let the agent produce a fresh trading thesis,
-                    then watch the exact collect-review-decide-execute loop before paper or live routing.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="inline-flex rounded-full border border-[var(--line)] bg-black/25 p-1">
-                    <button
-                      className={`rounded-full px-5 py-2 text-sm ${launchMode === "paper" ? "bg-[var(--paper)] font-semibold text-black" : "text-[var(--muted)]"}`}
-                      onClick={() => setLaunchMode("paper")}
-                    >
-                      Paper
-                    </button>
-                    <button
-                      className={`rounded-full px-5 py-2 text-sm ${launchMode === "live" ? "bg-[var(--signal)] font-semibold text-black" : "text-[var(--muted)]"}`}
-                      onClick={() => setLaunchMode("live")}
-                    >
-                      Live
-                    </button>
-                  </div>
-
-                  <div className="inline-flex items-center gap-3 rounded-full border border-[var(--line)] bg-black/25 px-4 py-2 text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                    <span className={`h-2.5 w-2.5 rounded-full ${killSwitch ? "bg-rose-400" : "bg-emerald-400 live-pulse"}`} />
-                    {killSwitch ? "Kill switch active" : "Routing armed"}
-                  </div>
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <button className="primary-button w-full justify-center" onClick={() => focusLaunch("recipe")}>
-                    Run Recipe
-                    <Play className="h-4 w-4" />
-                  </button>
-                  <button className="secondary-button w-full justify-center" onClick={() => focusLaunch("agent")}>
-                    Ask Agent
-                    <Bot className="h-4 w-4" />
-                  </button>
-                </div>
+    <div className="min-h-[100dvh] bg-transparent px-4 py-4 sm:px-6 sm:py-6">
+      <div
+        className="mx-auto max-w-[1500px] overflow-hidden rounded-[2rem] border border-[var(--line)] bg-[rgba(11,14,16,0.82)] shadow-[0_24px_120px_rgba(0,0,0,0.34)] animate-[stage-in_420ms_cubic-bezier(0.22,1,0.36,1)_both]"
+        data-testid="dashboard-workbench"
+      >
+        <header className="border-b border-[var(--line)] px-5 py-5 sm:px-8 sm:py-7">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+            <div className="max-w-3xl">
+              <div className="text-[0.7rem] uppercase tracking-[0.34em] text-[var(--muted)]">
+                tinyfish-remora
               </div>
-
-              <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
-                <div className="rounded-[2rem] border border-[var(--line)] bg-[linear-gradient(150deg,rgba(255,255,255,0.06),rgba(255,255,255,0.01))] p-5">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Current run state</div>
-                      <div className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[var(--paper)]">
-                        {selectedRun?.label ?? "No active run"}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-3xl font-semibold text-[var(--signal)]">
-                        {selectedRun?.progress ?? 0}%
-                      </div>
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                        {runProgressLabel(selectedRun?.progress ?? 0)}
-                      </div>
-                    </div>
-                  </div>
-                  <p className="mt-4 text-sm leading-7 text-[var(--paper)]">
-                    {selectedRun?.lastMessage ??
-                      "Recipe launches and agent drafts both stream here with identical event shapes."}
-                  </p>
-                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/8">
-                    <div
-                      className="progress-beam h-full rounded-full bg-[var(--signal)]"
-                      style={{ width: `${selectedRun?.progress ?? 0}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="rounded-[2rem] border border-[var(--line)] bg-black/25 px-5 py-4">
-                  <div className="grid grid-cols-3 gap-4">
-                    {[
-                      {
-                        label: "Open P&L",
-                        value: formatCurrency(unrealizedPnl),
-                        tone: unrealizedPnl >= 0 ? "text-emerald-300" : "text-rose-300",
-                      },
-                      {
-                        label: "Exposure",
-                        value: formatCurrency(totalExposure),
-                        tone: "text-[var(--paper)]",
-                      },
-                      {
-                        label: "Ready venues",
-                        value: `${readyConnections}/4`,
-                        tone: "text-[var(--paper)]",
-                      },
-                    ].map((metric) => (
-                      <div key={metric.label}>
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{metric.label}</div>
-                        <div className={`mt-2 text-2xl font-semibold ${metric.tone}`}>{metric.value}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-5 flex items-center justify-between border-t border-[var(--line)] pt-4 text-sm text-[var(--muted)]">
-                    <span>{liveWarnings} live venue warning{liveWarnings === 1 ? "" : "s"}</span>
-                    <button className="inline-flex items-center gap-2 text-[var(--paper)]" onClick={() => setKillSwitch((current) => !current)}>
-                      <Shield className="h-4 w-4 text-[var(--signal)]" />
-                      {killSwitch ? "Resume routing" : "Pause routing"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="relative overflow-hidden rounded-[2.4rem] border border-[var(--line)] bg-[linear-gradient(160deg,rgba(15,17,22,0.92),rgba(8,8,10,0.82))] p-6">
-              <div className="absolute inset-x-0 top-0 h-20 bg-[linear-gradient(180deg,rgba(230,59,46,0.14),transparent)]" />
-              <div className="relative flex h-full flex-col">
-                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] pb-5">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Live activity plane</div>
-                    <div className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-[var(--paper)]">
-                      {selectedRun?.label ?? "Awaiting launch"}
-                    </div>
-                  </div>
-                  <div className="rounded-full border border-[var(--line)] bg-black/25 px-4 py-2 text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                    {selectedRun?.mode ?? launchMode} · {selectedRun?.status ?? "idle"} · {selectedRun?.runtimeMode ?? runtimeStatus?.mode ?? "demo"}
-                  </div>
-                </div>
-
-                <div className="mt-6 grid gap-4 lg:grid-cols-[0.92fr_1.08fr]">
-                  <div className="space-y-4 rounded-[1.8rem] border border-[var(--line)] bg-black/20 p-5">
-                    <div className="flex items-center justify-between text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                      <span>Replay + launch scope</span>
-                      <span>{selectedRun ? formatTimestamp(selectedRun.startedAt) : "Idle"}</span>
-                    </div>
-                    <div className="rounded-[1.4rem] border border-[var(--line)] bg-black/35 px-4 py-3 text-sm leading-7 text-[var(--paper)]">
-                      {selectedRun?.streamingUrl ?? "A TinyFish replay URL appears here when the next run starts."}
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-[1.4rem] border border-[var(--line)] bg-black/25 p-4">
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Countries</div>
-                        <div className="mt-2 text-base text-[var(--paper)]">
-                          {selectedRun?.request.countries?.join(", ") ?? selectedCountries.join(", ")}
-                        </div>
-                      </div>
-                      <div className="rounded-[1.4rem] border border-[var(--line)] bg-black/25 p-4">
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Prompt version</div>
-                        <div className="mt-2 text-base text-[var(--paper)]">
-                          {selectedRun?.request.promptVersion ?? activeRecipe.promptVersion}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-[1.4rem] border border-[var(--line)] bg-black/25 p-4">
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Reviewed</div>
-                        <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">
-                          {selectedRun?.reviewedSignals.length ?? 0}
-                        </div>
-                      </div>
-                      <div className="rounded-[1.4rem] border border-[var(--line)] bg-black/25 p-4">
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Receipts</div>
-                        <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">
-                          {selectedRun?.receipts.length ?? 0}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-[1.8rem] border border-[var(--line)] bg-black/24 p-5">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Streaming ledger</div>
-                      <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                        <span className="h-2 w-2 rounded-full bg-emerald-400 live-pulse" />
-                        {selectedRun ? selectedRun.phase : "Idle"}
-                      </div>
-                    </div>
-                    <div className="mt-4 space-y-3">
-                      {activityPreview.length === 0 ? (
-                        <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/20 p-4 text-sm leading-7 text-[var(--muted)]">
-                          Launch a recipe or an agent draft to populate the live stream, scored review, and receipts in one place.
-                        </div>
-                      ) : (
-                        activityPreview.map((event, index) => (
-                          <div
-                            key={event.id}
-                            className={`rounded-[1.5rem] border border-[var(--line)] bg-black/20 p-4 ${index === 0 ? "event-glow" : ""}`}
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="rounded-full border border-[var(--line)] px-3 py-1 text-[10px] uppercase tracking-[0.22em] text-[var(--signal)]">
-                                {event.phase}
-                              </span>
-                              <span className="text-[10px] uppercase tracking-[0.22em] text-[var(--muted)]">
-                                {formatTimestamp(event.timestamp)}
-                              </span>
-                            </div>
-                            <div className="mt-3 text-sm leading-7 text-[var(--paper)]">{event.message}</div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {runError ? (
-          <div className="cockpit-reveal rounded-[1.7rem] border border-[rgba(230,59,46,0.3)] bg-[rgba(230,59,46,0.1)] px-5 py-4 text-sm text-[var(--paper)]">
-            {runError}
-          </div>
-        ) : null}
-
-        {runtimeStatus ? (
-          <div className="cockpit-reveal rounded-[1.7rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] px-5 py-4">
-            <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Runtime mode</div>
-            <div className="mt-2 text-sm leading-7 text-[var(--paper)]">
-              {runtimeStatus.mode === "demo"
-                ? "Demo fallback is active. TinyFish, review, and execution continue to run locally until gateway env vars are configured."
-                : runtimeStatus.mode === "hybrid"
-                  ? "Hybrid runtime is active. Some providers are env-backed and the rest still fall back to the local demo engine."
-                  : "Live runtime is active. TinyFish, review, and execution routes are all env-backed."}
-            </div>
-            {runtimeStatus.warnings.slice(0, 2).map((warning) => (
-              <div key={warning} className="mt-2 text-xs leading-6 text-[var(--muted)]">
-                {warning}
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <section className="section-reveal grid gap-5 lg:grid-cols-[0.84fr_1.16fr]">
-          <div className="rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm uppercase tracking-[0.24em] text-[var(--muted)]">Overview</div>
-                <div className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
-                  Venue health and exposure
-                </div>
-              </div>
-              <Gauge className="h-6 w-6 text-[var(--signal)]" />
-            </div>
-            <div className="mt-6 space-y-4">
-              {effectiveConnections.map((connection) => (
-                <div key={connection.id} className="rounded-[1.8rem] border border-[var(--line)] bg-black/18 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{connection.mode}</div>
-                      <div className="mt-1 text-xl font-semibold text-[var(--paper)]">{connection.label}</div>
-                      <div className="mt-1 text-sm text-[var(--muted)]">{connection.statusNote}</div>
-                    </div>
-                    <span className={`rounded-full px-3 py-1 text-xs uppercase tracking-[0.22em] ${toneForConnection(connection.status)}`}>
-                      {connection.status}
-                    </span>
-                  </div>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    {Object.entries(connection.fields).map(([field, value]) => (
-                      <label key={field} className="space-y-2">
-                        <span className="text-[10px] uppercase tracking-[0.22em] text-[var(--muted)]">{field}</span>
-                        <input
-                          className="input-shell"
-                          value={value}
-                          onChange={(event) => updateConnectionField(connection.id, field, event.target.value)}
-                          readOnly={runtimeManagedConnections}
-                          type={field.toLowerCase().includes("key") || field.toLowerCase().includes("secret") ? "password" : "text"}
-                        />
-                        {value ? (
-                          <span className="text-xs text-[var(--muted)]">Stored as {maskValue(value)}</span>
-                        ) : null}
-                        {runtimeManagedConnections ? (
-                          <span className="text-xs text-[var(--muted)]">Managed by server environment.</span>
-                        ) : null}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm uppercase tracking-[0.24em] text-[var(--muted)]">Open positions</div>
-                <div className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
-                  P&amp;L stays attributable
-                </div>
-              </div>
-              <TrendingUp className="h-6 w-6 text-[var(--signal)]" />
-            </div>
-
-            <div className="mt-6 grid gap-4 md:grid-cols-3">
-              {[
-                {
-                  label: "Gross exposure",
-                  value: formatCurrency(totalExposure),
-                  note: "Across paper and live-marked open positions.",
-                },
-                {
-                  label: "Unrealized P&L",
-                  value: formatCurrency(unrealizedPnl),
-                  note: "Marks update continuously in demo mode.",
-                },
-                {
-                  label: "Open positions",
-                  value: `${positions.length}`,
-                  note: "Each position retains its originating strategy.",
-                },
-              ].map((card) => (
-                <div key={card.label} className="rounded-[1.7rem] border border-[var(--line)] bg-black/18 p-4">
-                  <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{card.label}</div>
-                  <div className="mt-2 text-3xl font-semibold text-[var(--paper)]">{card.value}</div>
-                  <div className="mt-2 text-sm leading-6 text-[var(--muted)]">{card.note}</div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-5 overflow-hidden rounded-[1.8rem] border border-[var(--line)]">
-              <div className="grid grid-cols-[1.1fr_1fr_0.7fr_0.7fr_0.8fr] gap-3 bg-black/26 px-4 py-3 text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                <div>Instrument</div>
-                <div>Strategy</div>
-                <div>Entry</div>
-                <div>Mark</div>
-                <div>P&amp;L</div>
-              </div>
-              {positions.map((position) => {
-                const pnl = (position.markPrice - position.entryPrice) * position.quantity;
-                return (
-                  <div
-                    key={position.id}
-                    className="grid grid-cols-[1.1fr_1fr_0.7fr_0.7fr_0.8fr] gap-3 border-t border-[var(--line)] px-4 py-3 text-sm"
-                  >
-                    <div>
-                      <div className="font-semibold text-[var(--paper)]">{position.symbolOrToken}</div>
-                      <div className="text-xs text-[var(--muted)]">{position.venue} · {position.mode}</div>
-                    </div>
-                    <div className="text-[var(--paper)]">{position.strategyName}</div>
-                    <div>{formatCurrency(position.entryPrice)}</div>
-                    <div>{formatCurrency(position.markPrice)}</div>
-                    <div className={pnl >= 0 ? "text-emerald-300" : "text-rose-300"}>
-                      {formatCurrency(pnl)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-
-        <section id="launch-section" className="section-reveal rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div className="text-sm uppercase tracking-[0.24em] text-[var(--muted)]">Launch</div>
-              <div className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
-                Recipe execution and agent drafting
-              </div>
-              <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--muted)]">
-                One run contract now carries recipe identity, source scope, countries, prompt version,
-                and venue intent through launch, streaming, review, and execution.
+              <h1 className="mt-3 text-3xl font-semibold tracking-[-0.07em] text-[var(--paper)] sm:text-5xl">
+                Run the scan. Review the signal. Replay the trade.
+              </h1>
+              <p className="mt-3 max-w-2xl text-sm leading-7 text-[var(--muted)] sm:text-base">
+                Start in the workbench. Pick a recipe, narrow the country and source set, launch
+                paper or live mode, and keep every run available for review and replay.
               </p>
             </div>
 
-            <div className="inline-flex rounded-full border border-[var(--line)] bg-black/25 p-1">
-              <button
-                className={`rounded-full px-4 py-2 text-sm ${launchSurface === "recipe" ? "bg-[var(--signal)] font-semibold text-black" : "text-[var(--muted)]"}`}
-                onClick={() => setLaunchSurface("recipe")}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <RuntimePill
+                label="Runtime"
+                value={runtime?.mode ?? "Checking"}
+                tone={runtime?.mode === "live" ? "success" : runtime?.mode === "hybrid" ? "accent" : "neutral"}
+              />
+              <RuntimePill
+                label="Profile"
+                value={profile?.name ?? "Loading"}
+                tone="neutral"
+              />
+              <Link
+                href="/auth"
+                className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-white/[0.03] px-4 py-2.5 text-sm text-[var(--paper)] transition-colors hover:border-[rgba(255,105,71,0.32)] hover:bg-white/[0.05]"
               >
-                Run Recipe
-              </button>
-              <button
-                className={`rounded-full px-4 py-2 text-sm ${launchSurface === "agent" ? "bg-[var(--paper)] font-semibold text-black" : "text-[var(--muted)]"}`}
-                onClick={() => setLaunchSurface("agent")}
-              >
-                Ask Agent
-              </button>
+                <UserRound className="h-4 w-4 text-[var(--signal)]" />
+                Profiles
+              </Link>
             </div>
           </div>
 
-          {launchSurface === "recipe" ? (
-            <div className="mt-6 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
-              <div className="rounded-[2rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="flex items-center justify-between gap-4">
+          <div className="mt-5 flex flex-wrap gap-2.5">
+            {(runtime?.providers ?? []).map((provider) => (
+              <RuntimePill
+                key={provider.provider}
+                label={formatProviderLabel(provider.provider)}
+                value={provider.enabled ? "Live" : "Fallback"}
+                tone={provider.enabled ? "success" : "warning"}
+              />
+            ))}
+            {runtimeError ? (
+              <RuntimePill label="Status" value={runtimeError} tone="warning" />
+            ) : null}
+          </div>
+        </header>
+
+        <div className="grid xl:grid-cols-[minmax(0,1.45fr)_24rem]">
+          <main className="border-b border-[var(--line)] xl:border-r xl:border-b-0">
+            <section id="launch-section" className="border-b border-[var(--line)] px-5 py-6 sm:px-8 sm:py-8">
+              <div className="flex flex-col gap-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                   <div>
-                    <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Recipe registry</div>
-                    <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">{activeRecipe.title}</div>
-                    <div className="mt-1 text-sm text-[var(--muted)]">{activeRecipe.subtitle}</div>
-                  </div>
-                  <span className={`rounded-full px-3 py-1 text-xs uppercase tracking-[0.22em] ${toneForReadiness(activeRecipe.readiness)}`}>
-                    {activeRecipe.readiness}
-                  </span>
-                </div>
-
-                <p className="mt-4 text-sm leading-7 text-[var(--paper)]">{activeRecipe.description}</p>
-
-                <div className="mt-5 grid gap-3 md:grid-cols-3">
-                  {[
-                    {
-                      label: "Evidence",
-                      value: `${activeRecipe.evidenceCount}`,
-                      note: "successful proof runs",
-                    },
-                    {
-                      label: "Sample signals",
-                      value: `${activeRecipe.sampleSignalCount}`,
-                      note: "recorded in registry",
-                    },
-                    {
-                      label: "Last success",
-                      value: formatTimestamp(activeRecipe.lastSuccessfulRunAt),
-                      note: "latest healthy run",
-                    },
-                  ].map((item) => (
-                    <div key={item.label} className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{item.label}</div>
-                      <div className="mt-2 text-lg font-semibold text-[var(--paper)]">{item.value}</div>
-                      <div className="mt-1 text-xs text-[var(--muted)]">{item.note}</div>
+                    <div className="text-[0.7rem] uppercase tracking-[0.28em] text-[var(--muted)]">
+                      01 Setup
                     </div>
-                  ))}
-                </div>
-
-                <div className="mt-5 space-y-3">
-                  {RECIPE_REGISTRY.map((recipe) => (
-                    <button
-                      type="button"
-                      key={recipe.id}
-                      className={`w-full rounded-[1.5rem] border px-4 py-4 text-left transition ${recipe.id === selectedRecipeId ? "border-[rgba(230,59,46,0.38)] bg-[rgba(230,59,46,0.09)]" : "border-[var(--line)] bg-black/20"}`}
-                      onClick={() => setSelectedRecipeId(recipe.id)}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{recipe.category}</div>
-                          <div className="mt-1 text-xl font-semibold text-[var(--paper)]">{recipe.title}</div>
-                        </div>
-                        <span className={`rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.22em] ${toneForReadiness(recipe.readiness)}`}>
-                          {recipe.readiness}
-                        </span>
-                      </div>
-                      <div className="mt-3 text-sm leading-7 text-[var(--muted)]">{recipe.strategyOutline}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-[2rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Run scope</div>
-                    <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">Countries, sources, and venue path</div>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
+                      Configure the next run
+                    </h2>
                   </div>
-                  <Workflow className="h-6 w-6 text-[var(--signal)]" />
+                  <div className="max-w-xl text-sm leading-7 text-[var(--muted)]">
+                    Utility first. No strategy book, no account hurdle, no dead-end landing page.
+                  </div>
                 </div>
 
-                <div className="mt-6 grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-                  <div className="space-y-4">
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Countries</div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {activeRecipe.countries.map((country) => (
-                          <button
-                            key={country}
-                            className={`rounded-full border px-3 py-1.5 text-sm ${selectedCountries.includes(country) ? "border-[rgba(230,59,46,0.4)] bg-[rgba(230,59,46,0.1)] text-[var(--paper)]" : "border-[var(--line)] text-[var(--muted)]"}`}
-                            onClick={() => toggleCountry(country)}
-                          >
-                            {country}
-                          </button>
-                        ))}
-                      </div>
+                <div className="grid gap-8 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+                  <div className="overflow-hidden rounded-[1.5rem] border border-[var(--line)]">
+                    <div className="border-b border-[var(--line)] px-4 py-3 text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                      Recipe
                     </div>
+                    <div className="divide-y divide-[var(--line)]">
+                      {RECIPE_REGISTRY.map((entry) => {
+                        const active = entry.id === recipe.id;
 
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Sources</div>
-                      <div className="mt-3 space-y-3">
-                        {activeRecipe.sources.map((source) => (
+                        return (
                           <button
+                            key={entry.id}
                             type="button"
-                            key={source.id}
-                            className={`w-full rounded-[1.4rem] border px-4 py-3 text-left ${selectedSources.includes(source.id) ? "border-[rgba(230,59,46,0.38)] bg-[rgba(230,59,46,0.08)]" : "border-[var(--line)] bg-black/18"}`}
-                            onClick={() => toggleSource(source.id)}
+                            onClick={() => setRecipeId(entry.id)}
+                            className={`flex w-full items-start justify-between gap-4 px-4 py-4 text-left transition-colors ${
+                              active
+                                ? "bg-white/[0.05]"
+                                : "bg-transparent hover:bg-white/[0.03]"
+                            }`}
                           >
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <div className="text-sm font-medium text-[var(--paper)]">{source.name}</div>
-                                <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{source.country} · {source.locale}</div>
+                            <div>
+                              <div className="text-sm font-medium text-[var(--paper)]">
+                                {entry.title}
                               </div>
-                              <span className={`rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.22em] ${source.status === "healthy" ? "bg-emerald-500/12 text-emerald-200" : "bg-amber-500/12 text-amber-200"}`}>
-                                {source.status}
-                              </span>
+                              <div className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                                {entry.subtitle}
+                              </div>
+                            </div>
+                            <div className="shrink-0 text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                              {entry.readiness}
                             </div>
                           </button>
-                        ))}
-                      </div>
+                        );
+                      })}
                     </div>
                   </div>
 
-                  <div className="space-y-4">
-                    <div className="rounded-[1.6rem] border border-[var(--line)] bg-black/22 p-4">
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Supported venues</div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {["both", ...activeRecipe.supportedVenues].map((option) => {
-                          const disabled = option !== "both" && !activeRecipe.supportedVenues.includes(option as Venue);
-                          return (
+                  <div className="grid gap-5">
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <div>
+                        <div className="text-[0.72rem] uppercase tracking-[0.24em] text-[var(--muted)]">
+                          Mode
+                        </div>
+                        <div className="mt-3 inline-flex rounded-full border border-[var(--line)] bg-white/[0.02] p-1">
+                          {(["paper", "live"] as const).map((entryMode) => (
                             <button
-                              key={option}
-                              className={`rounded-full border px-3 py-1.5 text-sm ${preferredVenue === option ? "border-[rgba(230,59,46,0.4)] bg-[rgba(230,59,46,0.1)] text-[var(--paper)]" : "border-[var(--line)] text-[var(--muted)]"} ${disabled ? "opacity-40" : ""}`}
-                              disabled={disabled}
-                              onClick={() => setPreferredVenue(option as VenueCandidate)}
+                              key={entryMode}
+                              type="button"
+                              onClick={() => setMode(entryMode)}
+                              className={`rounded-full px-4 py-2 text-sm transition-colors ${
+                                mode === entryMode
+                                  ? "bg-[var(--signal)] text-black"
+                                  : "text-[var(--muted)] hover:text-[var(--paper)]"
+                              }`}
                             >
-                              {option}
+                              {entryMode === "paper" ? "Paper" : "Live"}
                             </button>
-                          );
-                        })}
-                      </div>
-                      <div className="mt-4 text-sm leading-7 text-[var(--muted)]">
-                        Add a new country by extending the recipe registry with source definitions and prompt versioning, not by wiring new UI-only branches.
-                      </div>
-                    </div>
-
-                    <div className="rounded-[1.6rem] border border-[var(--line)] bg-black/22 p-4">
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        <div>
-                          <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Prompt version</div>
-                          <div className="mt-2 text-lg font-semibold text-[var(--paper)]">{activeRecipe.promptVersion}</div>
-                        </div>
-                        <div>
-                          <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Scoring model</div>
-                          <div className="mt-2 text-lg font-semibold text-[var(--paper)]">{activeRecipe.scoringModel}</div>
+                          ))}
                         </div>
                       </div>
-                      <div className="mt-4 space-y-2 text-sm leading-7 text-[var(--paper)]">
-                        {activeRecipe.guardrails.map((line) => (
-                          <div key={line}>{line}</div>
-                        ))}
-                      </div>
-                    </div>
 
-                    <div className="rounded-[1.6rem] border border-[var(--line)] bg-black/22 p-4">
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Known failure modes</div>
-                      <div className="mt-3 space-y-2 text-sm leading-7 text-[var(--paper)]">
-                        {activeRecipe.knownFailureModes.map((line) => (
-                          <div key={line}>{line}</div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {launchMode === "live" ? (
-                      <div className={`rounded-[1.6rem] border px-4 py-4 text-sm ${liveLaunchBlocked ? "border-[rgba(239,68,68,0.28)] bg-[rgba(239,68,68,0.08)] text-rose-100" : liveLaunchWarning ? "border-[rgba(245,158,11,0.28)] bg-[rgba(245,158,11,0.08)] text-amber-100" : "border-[rgba(52,211,153,0.24)] bg-[rgba(52,211,153,0.08)] text-emerald-100"}`}>
-                        {liveLaunchBlocked
-                          ? "Live preflight is blocked. This recipe is not live-ready or a required venue credential is missing."
-                          : liveLaunchWarning
-                            ? "Live preflight is yellow. Credentials exist, but at least one venue still needs operator review."
-                            : "Live preflight is green enough for an operator-confirmed launch."}
-                      </div>
-                    ) : null}
-
-                    <button className="primary-button w-full justify-center" onClick={launchRecipeRun} disabled={isLaunching}>
-                      {isLaunching ? "Launching..." : launchMode === "live" ? "Launch Live Run" : "Launch Paper Run"}
-                      <ArrowRight className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-6 grid gap-5 xl:grid-cols-[0.98fr_1.02fr]">
-              <div className="rounded-[2rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Agent brief</div>
-                    <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">Generate a fresh thesis</div>
-                  </div>
-                  <Bot className="h-6 w-6 text-[var(--signal)]" />
-                </div>
-
-                <div className="mt-6 grid gap-4">
-                  <label className="space-y-2">
-                    <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Objective</span>
-                    <textarea
-                      className="input-shell min-h-36 resize-none"
-                      value={objective}
-                      onChange={(event) => setObjective(event.target.value)}
-                    />
-                  </label>
-
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <label className="space-y-2">
-                      <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Risk</span>
-                      <select
-                        className="input-shell"
-                        value={riskProfile}
-                        onChange={(event) => setRiskProfile(event.target.value as DemoUser["riskProfile"])}
-                      >
-                        <option value="conservative">Conservative</option>
-                        <option value="balanced">Balanced</option>
-                        <option value="aggressive">Aggressive</option>
-                      </select>
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Venue bias</span>
-                      <select
-                        className="input-shell"
-                        value={preferredVenue}
-                        onChange={(event) => setPreferredVenue(event.target.value as VenueCandidate)}
-                      >
-                        <option value="both">Both</option>
-                        <option value="ibkr">IBKR</option>
-                        <option value="polymarket">Polymarket</option>
-                      </select>
-                    </label>
-                    <div className="space-y-2">
-                      <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Action</span>
-                      <button className="primary-button w-full justify-center" onClick={generateStrategy}>
-                        {isGenerating ? "Generating..." : "Generate Draft"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-5 rounded-[1.6rem] border border-[var(--line)] bg-black/20 p-4">
-                  <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Live objective preview</div>
-                  <div className="mt-2 text-base leading-7 text-[var(--paper)]">
-                    {deferredObjective}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-[2rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Draft output</div>
-                    <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">
-                      {generated?.name ?? "Awaiting draft"}
-                    </div>
-                  </div>
-                  <Sparkles className="h-6 w-6 text-[var(--signal)]" />
-                </div>
-
-                {generated ? (
-                  <div className="mt-5 space-y-4">
-                    <div className="rounded-[1.6rem] border border-[rgba(230,59,46,0.28)] bg-[rgba(230,59,46,0.08)] p-4">
-                      <div className="text-sm leading-7 text-[var(--paper)]">{generated.thesis}</div>
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                          {generated.promptVersion}
-                        </span>
-                        <span className={`rounded-full px-3 py-1 text-xs uppercase tracking-[0.22em] ${toneForApproval(generated.approvalState)}`}>
-                          {generated.approvalState}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-3">
-                      {generated.scorecard.map((item) => (
-                        <div key={item.label} className="rounded-[1.4rem] border border-[var(--line)] bg-black/22 p-4">
-                          <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{item.label}</div>
-                          <div className="mt-2 text-3xl font-semibold text-[var(--signal)]">{item.score}</div>
-                          <div className="mt-2 text-sm leading-6 text-[var(--paper)]">{item.note}</div>
+                      <div>
+                        <div className="text-[0.72rem] uppercase tracking-[0.24em] text-[var(--muted)]">
+                          Route
                         </div>
-                      ))}
-                    </div>
-
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Generated run config</div>
-                        <div className="mt-3 space-y-2 text-sm leading-7 text-[var(--paper)]">
-                          <div>Recipe: {getRecipeDefinition(generated.runConfig.recipeId).title}</div>
-                          <div>Countries: {generated.runConfig.countries?.join(", ")}</div>
-                          <div>Sources: {generated.runConfig.sources?.join(", ")}</div>
-                          <div>Venue bias: {generated.runConfig.preferredVenue}</div>
-                        </div>
-                      </div>
-                      <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Scoring rationale</div>
-                        <div className="mt-3 space-y-2 text-sm leading-7 text-[var(--paper)]">
-                          {generatedReasoning.map((line) => (
-                            <div key={line}>{line}</div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {[
+                            ...new Set<VenueCandidate>([
+                              recipe.defaultVenueBias,
+                              ...recipe.supportedVenues,
+                              recipe.supportedVenues.length > 1 ? "both" : recipe.supportedVenues[0],
+                            ]),
+                          ].map((venue) => (
+                            <button
+                              key={venue}
+                              type="button"
+                              onClick={() => setPreferredVenue(venue)}
+                              className={`rounded-full border px-3 py-2 text-sm transition-colors ${
+                                preferredVenue === venue
+                                  ? "border-[rgba(255,105,71,0.35)] bg-[rgba(255,105,71,0.08)] text-[var(--paper)]"
+                                  : "border-[var(--line)] text-[var(--muted)] hover:text-[var(--paper)]"
+                              }`}
+                            >
+                              {venue === "both"
+                                ? "Both"
+                                : venue === "ibkr"
+                                  ? "IBKR"
+                                  : venue === "polymarket"
+                                    ? "Polymarket"
+                                    : "None"}
+                            </button>
                           ))}
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-3 sm:flex-row">
-                      <button className="secondary-button justify-center" onClick={saveGeneratedStrategy}>
-                        Save Draft
-                      </button>
-                      <button className="primary-button justify-center" onClick={runGeneratedDraft}>
-                        Run Paper Preview
-                        <ArrowRight className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-5 rounded-[1.6rem] border border-[var(--line)] bg-black/20 p-5 text-sm leading-7 text-[var(--muted)]">
-                    The draft output will include a rerunnable run config, venue mapping, scorecard,
-                    and a paper-first approval state.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="section-reveal grid gap-5 xl:grid-cols-[0.86fr_1.14fr]">
-          <div className="rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm uppercase tracking-[0.24em] text-[var(--muted)]">Activity</div>
-                <div className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
-                  Run board
-                </div>
-              </div>
-              <Waves className="h-6 w-6 text-[var(--signal)]" />
-            </div>
-
-            <div className="mt-6 space-y-4">
-              {runs.length === 0 ? (
-                <div className="rounded-[1.7rem] border border-[var(--line)] bg-black/18 p-5 text-sm leading-7 text-[var(--muted)]">
-                  No runs yet. Launch a recipe or generated draft to populate the run board and event ledger.
-                </div>
-              ) : (
-                runs.map((run) => (
-                  <button
-                    type="button"
-                    key={run.id}
-                    className={`w-full rounded-[1.7rem] border px-5 py-4 text-left ${selectedRun?.id === run.id ? "border-[rgba(230,59,46,0.38)] bg-[rgba(230,59,46,0.08)]" : "border-[var(--line)] bg-black/18"}`}
-                    onClick={() => setSelectedRunId(run.id)}
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div>
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                          {run.mode} · {run.status} · {run.runtimeMode ?? runtimeStatus?.mode ?? "demo"} · {runProgressLabel(run.progress)}
-                        </div>
-                        <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">{run.label}</div>
-                        <div className="mt-2 text-sm leading-6 text-[var(--paper)]">{run.lastMessage}</div>
+                    <div>
+                      <div className="text-[0.72rem] uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Countries
                       </div>
-                      <div className="text-right">
-                        <div className="text-3xl font-semibold text-[var(--signal)]">{run.progress}%</div>
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{formatTimestamp(run.startedAt)}</div>
-                      </div>
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm uppercase tracking-[0.24em] text-[var(--muted)]">Event ledger</div>
-                <div className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
-                  Reviewable from stream to receipt
-                </div>
-              </div>
-              <ScrollText className="h-6 w-6 text-[var(--signal)]" />
-            </div>
-
-            <div className="mt-6 max-h-[48rem] space-y-3 overflow-y-auto pr-2">
-              {selectedRunEvents.length === 0 ? (
-                <div className="rounded-[1.7rem] border border-[var(--line)] bg-black/18 p-5 text-sm leading-7 text-[var(--muted)]">
-                  Select a run to inspect every stream, review, decision, and receipt event.
-                </div>
-              ) : (
-                selectedRunEvents.map((event) => (
-                  <div key={event.id} className="rounded-[1.6rem] border border-[var(--line)] bg-black/18 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <span className="rounded-full border border-[var(--line)] px-3 py-1 text-[10px] uppercase tracking-[0.22em] text-[var(--signal)]">
-                          {event.phase}
-                        </span>
-                        <span className="text-[10px] uppercase tracking-[0.22em] text-[var(--muted)]">
-                          {formatTimestamp(event.timestamp)}
-                        </span>
-                      </div>
-                      <span className="text-[10px] uppercase tracking-[0.22em] text-[var(--muted)]">
-                        {event.progress}%
-                      </span>
-                    </div>
-                    <div className="mt-3 text-sm leading-7 text-[var(--paper)]">{event.message}</div>
-                    {event.meta?.streaming_url ? (
-                      <div className="mt-3 rounded-[1.3rem] border border-[var(--line)] bg-black/22 p-3 text-xs leading-6 text-[var(--muted)]">
-                        Replay URL: {String(event.meta.streaming_url)}
-                      </div>
-                    ) : null}
-                    {event.rawSignal ? (
-                      <div className="mt-3 rounded-[1.3rem] border border-[var(--line)] bg-black/22 p-3 text-sm leading-6 text-[var(--paper)]">
-                        Raw signal: {event.rawSignal.source} · {event.rawSignal.country} · {event.rawSignal.title}
-                      </div>
-                    ) : null}
-                    {event.reviewedSignal ? (
-                      <div className="mt-3 rounded-[1.3rem] border border-[var(--line)] bg-black/22 p-3 text-sm leading-6 text-[var(--paper)]">
-                        Reviewed: {event.reviewedSignal.reviewScore}/100 · {formatPercent(event.reviewedSignal.confidence * 100)}
-                      </div>
-                    ) : null}
-                    {event.receipt ? (
-                      <div className="mt-3 rounded-[1.3rem] border border-[var(--line)] bg-black/22 p-3 text-sm leading-6 text-[var(--paper)]">
-                        Receipt: {event.receipt.venue.toUpperCase()} {event.receipt.status} · {formatCurrency(event.receipt.notionalUsd)}
-                      </div>
-                    ) : null}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="section-reveal rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="text-sm uppercase tracking-[0.24em] text-[var(--muted)]">Review</div>
-              <div className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
-                Scored signals, instruments, and receipts
-              </div>
-            </div>
-            <CheckCircle2 className="h-6 w-6 text-[var(--signal)]" />
-          </div>
-
-          {selectedRun ? (
-            <div className="mt-6 grid gap-5 xl:grid-cols-[0.8fr_1fr_0.9fr]">
-              <div className="rounded-[1.8rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Raw signals</div>
-                <div className="mt-4 space-y-3">
-                  {selectedRun.rawSignals.length === 0 ? (
-                    <div className="text-sm leading-7 text-[var(--muted)]">No raw signals recorded for this run.</div>
-                  ) : (
-                    selectedRun.rawSignals.map((signal) => (
-                      <div key={signal.fingerprint} className="rounded-[1.4rem] border border-[var(--line)] bg-black/22 p-4">
-                        <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{signal.country} · {signal.language}</div>
-                        <div className="mt-2 text-base font-semibold text-[var(--paper)]">{signal.title}</div>
-                        <div className="mt-2 text-sm leading-6 text-[var(--muted)]">{signal.summary}</div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-[1.8rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Reviewed signal</div>
-                {selectedReview ? (
-                  <div className="mt-4 space-y-4">
-                    <div className="rounded-[1.5rem] border border-[rgba(230,59,46,0.28)] bg-[rgba(230,59,46,0.08)] p-4">
-                      <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div>
-                          <div className="text-base font-semibold text-[var(--paper)]">{selectedReview.title}</div>
-                          <div className="mt-2 text-sm leading-7 text-[var(--paper)]">{selectedReview.thesis}</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-3xl font-semibold text-[var(--signal)]">{selectedReview.reviewScore}</div>
-                          <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">review score</div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Instrument mapping</div>
-                      <div className="mt-3 space-y-3">
-                        {selectedReview.instrumentCandidates.map((instrument) => (
-                          <div key={`${instrument.venue}-${instrument.symbolOrToken}`} className="rounded-[1.3rem] border border-[var(--line)] bg-black/22 p-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <div className="text-sm font-medium text-[var(--paper)]">{instrument.label}</div>
-                                <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{instrument.venue}</div>
-                              </div>
-                              <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">
-                                {instrument.sideHint ?? "buy"}
-                              </div>
-                            </div>
-                          </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {recipe.countries.map((country) => (
+                          <button
+                            key={country}
+                            type="button"
+                            onClick={() =>
+                              setSelectedCountries((currentCountries) =>
+                                makeSelection(currentCountries, country, recipe.countries),
+                              )
+                            }
+                            className={`rounded-full border px-3 py-2 text-sm transition-colors ${
+                              selectedCountries.includes(country)
+                                ? "border-[rgba(255,105,71,0.35)] bg-[rgba(255,105,71,0.08)] text-[var(--paper)]"
+                                : "border-[var(--line)] text-[var(--muted)] hover:text-[var(--paper)]"
+                            }`}
+                          >
+                            {formatCountry(country)}
+                          </button>
                         ))}
                       </div>
                     </div>
 
-                    <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                      <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Review rationale</div>
-                      <div className="mt-3 text-sm leading-7 text-[var(--paper)]">
-                        {selectedReview.reasoning}
+                    <div>
+                      <div className="text-[0.72rem] uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Sources
+                      </div>
+                      <div className="mt-3 grid gap-2">
+                        {recipe.sources.map((source) => (
+                          <label
+                            key={source.id}
+                            className="flex items-start justify-between gap-4 rounded-[1.15rem] border border-[var(--line)] px-4 py-3 transition-colors hover:border-[rgba(255,105,71,0.22)]"
+                          >
+                            <div className="flex items-start gap-3">
+                              <input
+                                type="checkbox"
+                                checked={selectedSources.includes(source.id)}
+                                onChange={() =>
+                                  setSelectedSources((currentSources) =>
+                                    makeSelection(
+                                      currentSources,
+                                      source.id,
+                                      recipe.sources.map((entry) => entry.id),
+                                    ),
+                                  )
+                                }
+                                className="mt-1 h-4 w-4 accent-[var(--signal)]"
+                              />
+                              <div>
+                                <div className="text-sm font-medium text-[var(--paper)]">
+                                  {source.name}
+                                </div>
+                                <div className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                                  {formatCountry(source.country)} · {source.kind} · {source.cadence}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="shrink-0 text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                              {source.status}
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-4 border-t border-[var(--line)] pt-5">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => void launchRun()}
+                          disabled={launchPending || activeRun !== null}
+                          className="inline-flex items-center justify-center gap-2 rounded-full bg-[var(--signal)] px-5 py-3 text-sm font-semibold text-black transition-colors hover:bg-[#ff785b] disabled:cursor-not-allowed disabled:bg-[rgba(255,105,71,0.5)]"
+                          data-testid="launch-run"
+                        >
+                          {activeRun ? "Run in progress" : mode === "paper" ? "Launch paper run" : "Launch live run"}
+                          <ArrowRight className="h-4 w-4" />
+                        </button>
+
+                        {selectedRun ? (
+                          <button
+                            type="button"
+                            onClick={() => replayRun(selectedRun)}
+                            disabled={launchPending || activeRun !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-full border border-[var(--line)] px-5 py-3 text-sm text-[var(--paper)] transition-colors hover:border-[rgba(255,105,71,0.32)] hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-60"
+                            data-testid="replay-selected-run"
+                          >
+                            <RefreshCcw className="h-4 w-4" />
+                            Replay selected run
+                          </button>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-2 text-sm leading-7 text-[var(--muted)]">
+                        <div>{liveModeWarning}</div>
+                        {launchError ? (
+                          <div className="text-[var(--danger)]">{launchError}</div>
+                        ) : null}
+                        {selectedRun?.runtimeWarnings.length ? (
+                          <div className="text-[var(--muted)]">
+                            {selectedRun.runtimeWarnings.join(" ")}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="border-b border-[var(--line)] px-5 py-6 sm:px-8 sm:py-8">
+              <div className="flex flex-col gap-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <div className="text-[0.7rem] uppercase tracking-[0.28em] text-[var(--muted)]">
+                      02 Stream
+                    </div>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
+                      Run stream
+                    </h2>
+                  </div>
+
+                  {selectedRun ? (
+                    <div className="text-sm leading-7 text-[var(--muted)]">
+                      {selectedRun.label} · {selectedRun.mode} · {formatTimestamp(selectedRun.startedAt)}
+                    </div>
+                  ) : null}
+                </div>
+
+                {selectedRun ? (
+                  <div className="grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(14rem,0.75fr)]">
+                    <div className="overflow-hidden rounded-[1.5rem] border border-[var(--line)]">
+                      <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3">
+                        <div className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                          Event ledger
+                        </div>
+                        <div className="text-sm text-[var(--paper)]">
+                          {selectedRun.status === "running" ? "Live" : selectedRun.status}
+                        </div>
+                      </div>
+
+                      <div className="border-b border-[var(--line)] px-4 py-4">
+                        <div className="progress-beam h-2 rounded-full bg-white/[0.05]">
+                          <div
+                            className="h-full rounded-full bg-[linear-gradient(90deg,#ff7152_0%,#ffd27c_100%)] transition-[width] duration-500"
+                            style={{ width: `${Math.max(selectedRun.progress, 8)}%` }}
+                          />
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <RuntimePill label="Phase" value={formatPhase(selectedRun.phase)} tone="neutral" />
+                          <RuntimePill label="Signals" value={`${selectedRun.rawSignals.length}`} tone="neutral" />
+                          <RuntimePill label="Reviewed" value={`${selectedRun.reviewedSignals.length}`} tone="neutral" />
+                          <RuntimePill label="Receipts" value={`${selectedRun.receipts.length}`} tone="neutral" />
+                        </div>
+                      </div>
+
+                      <div
+                        ref={ledgerRef}
+                        className="max-h-[28rem] space-y-0 overflow-auto"
+                        data-testid="event-ledger"
+                      >
+                        {selectedRun.events.length ? (
+                          selectedRun.events.map((event) => (
+                            <div
+                              key={event.id}
+                              className="border-b border-[var(--line)] px-4 py-4 last:border-b-0"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-medium text-[var(--paper)]">
+                                  {event.message}
+                                </div>
+                                <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                                  {formatPhase(event.phase)}
+                                </div>
+                              </div>
+                              <div className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                                {formatTimestamp(event.timestamp)}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="px-4 py-8 text-sm leading-7 text-[var(--muted)]">
+                            Launch a run to populate the stream ledger.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="overflow-hidden rounded-[1.5rem] border border-[var(--line)]">
+                      <div className="border-b border-[var(--line)] px-4 py-3 text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Run summary
+                      </div>
+                      <div className="space-y-4 px-4 py-4 text-sm leading-7 text-[var(--muted)]">
+                        <div>
+                          <div className="text-[var(--paper)]">Streaming URL</div>
+                          <div className="mt-1 break-all">{selectedRun.streamingUrl}</div>
+                        </div>
+                        <div>
+                          <div className="text-[var(--paper)]">Last update</div>
+                          <div className="mt-1">{selectedRun.lastMessage}</div>
+                        </div>
+                        <div>
+                          <div className="text-[var(--paper)]">Started</div>
+                          <div className="mt-1">{formatTimestamp(selectedRun.startedAt)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[var(--paper)]">Completed</div>
+                          <div className="mt-1">{formatTimestamp(selectedRun.completedAt)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[var(--paper)]">Countries</div>
+                          <div className="mt-1">
+                            {(selectedRun.request.countries ?? []).map(formatCountry).join(", ") || "Recipe default"}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-4 text-sm leading-7 text-[var(--muted)]">
-                    No reviewed signal exists for this run yet.
+                  <div className="rounded-[1.5rem] border border-dashed border-[var(--line)] px-5 py-10 text-sm leading-7 text-[var(--muted)]">
+                    No runs yet. Launch the default paper pass or switch to live mode and use the
+                    current runtime fallback path.
                   </div>
                 )}
               </div>
+            </section>
 
-              <div className="rounded-[1.8rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Receipts and execution</div>
-                <div className="mt-4 space-y-3">
-                  {selectedRun.receipts.length === 0 ? (
-                    <div className="text-sm leading-7 text-[var(--muted)]">No receipts emitted for this run.</div>
-                  ) : (
-                    selectedRun.receipts.map((receipt) => (
-                      <div key={receipt.receiptId} className="rounded-[1.4rem] border border-[var(--line)] bg-black/22 p-4">
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <div className="text-sm font-medium text-[var(--paper)]">{receipt.symbolOrToken}</div>
-                            <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{receipt.venue} · {receipt.status}</div>
+            <section className="px-5 py-6 sm:px-8 sm:py-8">
+              <div className="flex flex-col gap-6">
+                <div>
+                  <div className="text-[0.7rem] uppercase tracking-[0.28em] text-[var(--muted)]">
+                    03 Review
+                  </div>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
+                    Signals, decisions, receipts
+                  </h2>
+                </div>
+
+                <div className="grid gap-6 xl:grid-cols-3">
+                  <div className="overflow-hidden rounded-[1.5rem] border border-[var(--line)]">
+                    <div className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-3 text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                      <ScanSearch className="h-4 w-4 text-[var(--signal)]" />
+                      Raw signals
+                    </div>
+                    <div className="max-h-[24rem] overflow-auto" data-testid="raw-signals">
+                      {selectedRun?.rawSignals.length ? (
+                        selectedRun.rawSignals.map((signal) => (
+                          <RawSignalRow key={signal.id} signal={signal} />
+                        ))
+                      ) : (
+                        <EmptyState text="Raw source hits land here after the collector step." />
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="overflow-hidden rounded-[1.5rem] border border-[var(--line)]">
+                    <div className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-3 text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                      <ShieldCheck className="h-4 w-4 text-[var(--signal)]" />
+                      Reviewed signals
+                    </div>
+                    <div className="max-h-[24rem] overflow-auto" data-testid="reviewed-signals">
+                      {selectedRun?.reviewedSignals.length ? (
+                        selectedRun.reviewedSignals.map((signal) => (
+                          <ReviewedSignalRow key={`${signal.fingerprint}:${signal.source}`} signal={signal} />
+                        ))
+                      ) : (
+                        <EmptyState text="Reviewed signals and tradeable instrument candidates show up here." />
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="overflow-hidden rounded-[1.5rem] border border-[var(--line)]">
+                    <div className="flex items-center gap-2 border-b border-[var(--line)] px-4 py-3 text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                      <ChartNoAxesColumn className="h-4 w-4 text-[var(--signal)]" />
+                      Receipts
+                    </div>
+                    <div className="max-h-[24rem] overflow-auto" data-testid="receipts">
+                      {selectedRun?.receipts.length ? (
+                        selectedRun.receipts.map((receipt) => (
+                          <div
+                            key={receipt.receiptId}
+                            className="border-b border-[var(--line)] px-4 py-4 last:border-b-0"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm font-medium text-[var(--paper)]">
+                                {receipt.symbolOrToken}
+                              </div>
+                              <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                                {receipt.status}
+                              </div>
+                            </div>
+                            <div className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                              {receipt.venue.toUpperCase()} · {receipt.mode} · {receipt.side} · $
+                              {receipt.notionalUsd.toFixed(0)}
+                            </div>
                           </div>
-                          <div className="text-right">
-                            <div className="text-lg font-semibold text-[var(--paper)]">{formatCurrency(receipt.notionalUsd)}</div>
-                            <div className="text-xs text-[var(--muted)]">{receipt.side}</div>
+                        ))
+                      ) : (
+                        <EmptyState text="Execution receipts and preview artifacts appear here." />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </main>
+
+          <aside className="bg-[rgba(255,255,255,0.02)]">
+            <section className="border-b border-[var(--line)] px-5 py-6 sm:px-6 sm:py-8">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[0.7rem] uppercase tracking-[0.28em] text-[var(--muted)]">
+                    History
+                  </div>
+                  <h2 className="mt-2 text-xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
+                    Recent runs
+                  </h2>
+                </div>
+                <History className="h-5 w-5 text-[var(--signal)]" />
+              </div>
+
+              <div className="mt-5 space-y-3" data-testid="run-history">
+                {runs.length ? (
+                  runs.map((run) => {
+                    const selected = run.id === selectedRun?.id;
+
+                    return (
+                      <div
+                        key={run.id}
+                        className={`rounded-[1.35rem] border px-4 py-4 transition-colors ${
+                          selected
+                            ? "border-[rgba(255,105,71,0.35)] bg-[rgba(255,105,71,0.08)]"
+                            : "border-[var(--line)] bg-transparent"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRunId(run.id)}
+                          className="w-full text-left"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-medium text-[var(--paper)]">{run.label}</div>
+                            <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+                              {run.mode}
+                            </div>
                           </div>
+                          <div className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                            {run.lastMessage}
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <RuntimePill label="Status" value={run.status} tone="neutral" />
+                            <RuntimePill label="When" value={formatRelative(run.startedAt)} tone="neutral" />
+                          </div>
+                        </button>
+
+                        <div className="mt-4 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedRunId(run.id)}
+                            className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-xs text-[var(--paper)] transition-colors hover:border-[rgba(255,105,71,0.32)]"
+                          >
+                            <Play className="h-3.5 w-3.5" />
+                            Review
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => replayRun(run)}
+                            disabled={launchPending || activeRun !== null}
+                            className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] px-3 py-2 text-xs text-[var(--paper)] transition-colors hover:border-[rgba(255,105,71,0.32)] disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <RefreshCcw className="h-3.5 w-3.5" />
+                            Replay
+                          </button>
                         </div>
-                        <div className="mt-3 text-sm leading-7 text-[var(--paper)]">{receipt.message}</div>
                       </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-6 rounded-[1.8rem] border border-[var(--line)] bg-black/18 p-5 text-sm leading-7 text-[var(--muted)]">
-              Launch a run to inspect review scores, instrument candidates, and receipts.
-            </div>
-          )}
-        </section>
-
-        <section className="section-reveal rounded-[2.2rem] border border-[var(--line)] bg-[rgba(255,255,255,0.04)] p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="text-sm uppercase tracking-[0.24em] text-[var(--muted)]">Strategy book</div>
-              <div className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-[var(--paper)]">
-                Saved versions and promotion state
-              </div>
-            </div>
-            <KeyRound className="h-6 w-6 text-[var(--signal)]" />
-          </div>
-
-          <div className="mt-6 grid gap-4">
-            {strategies.map((strategy) => (
-              <div key={strategy.id} className="rounded-[1.9rem] border border-[var(--line)] bg-black/18 p-5">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="max-w-3xl">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">v{strategy.version} · {strategy.source}</span>
-                      <span className={`rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.22em] ${toneForReadiness(strategy.readiness)}`}>
-                        {strategy.readiness}
-                      </span>
-                      <span className={`rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.22em] ${toneForApproval(strategy.approvalState)}`}>
-                        {strategy.approvalState}
-                      </span>
-                    </div>
-                    <div className="mt-2 text-2xl font-semibold text-[var(--paper)]">{strategy.name}</div>
-                    <div className="mt-3 text-sm leading-7 text-[var(--paper)]">{strategy.thesis}</div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[1.35rem] border border-dashed border-[var(--line)] px-4 py-8 text-sm leading-7 text-[var(--muted)]">
+                    Completed runs stay here so you can review the stream and replay the same config.
                   </div>
-                  <div className="flex flex-col gap-2">
-                    <button className="secondary-button justify-center" onClick={() => toggleStrategyApproval(strategy.id)}>
-                      {strategy.approvalState === "live-armed" ? "Return to Paper" : "Promote to Live"}
-                    </button>
-                    <button className="primary-button justify-center" onClick={() => runStrategy(strategy)}>
-                      Run {strategy.runConfig.mode}
-                    </button>
+                )}
+              </div>
+            </section>
+
+            <section className="px-5 py-6 sm:px-6 sm:py-8">
+              <div className="text-[0.7rem] uppercase tracking-[0.28em] text-[var(--muted)]">
+                Live notes
+              </div>
+              <div className="mt-4 space-y-4 text-sm leading-7 text-[var(--muted)]">
+                <div className="rounded-[1.35rem] border border-[var(--line)] px-4 py-4">
+                  <div className="flex items-center gap-2 text-[var(--paper)]">
+                    <RadioTower className="h-4 w-4 text-[var(--signal)]" />
+                    Runtime
+                  </div>
+                  <div className="mt-2">
+                    {runtime?.warnings.length
+                      ? runtime.warnings.join(" ")
+                      : "Provider health is clear enough for local testing."}
                   </div>
                 </div>
 
-                <div className="mt-5 grid gap-4 md:grid-cols-3">
-                  <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                    <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Run config</div>
-                    <div className="mt-2 text-sm leading-7 text-[var(--paper)]">
-                      {getRecipeDefinition(strategy.runConfig.recipeId).title}
-                      <br />
-                      {strategy.runConfig.countries?.join(", ")}
-                    </div>
+                <div className="rounded-[1.35rem] border border-[var(--line)] px-4 py-4">
+                  <div className="flex items-center gap-2 text-[var(--paper)]">
+                    <Clock3 className="h-4 w-4 text-[var(--signal)]" />
+                    Replay model
                   </div>
-                  <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                    <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Venue mapping</div>
-                    <div className="mt-2 text-sm leading-7 text-[var(--paper)]">
-                      {strategy.venueMapping.map((mapping) => `${mapping.venue}: ${mapping.instruments.join(", ")}`).join(" · ")}
-                    </div>
+                  <div className="mt-2">
+                    Every completed run is kept locally on this device. Replay launches the same
+                    request again through the current runtime mode.
                   </div>
-                  <div className="rounded-[1.5rem] border border-[var(--line)] bg-black/22 p-4">
-                    <div className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Last run</div>
-                    <div className="mt-2 text-sm leading-7 text-[var(--paper)]">{strategy.lastRunSummary ?? "No runs yet."}</div>
+                </div>
+
+                <div className="rounded-[1.35rem] border border-[var(--line)] px-4 py-4">
+                  <div className="flex items-center gap-2 text-[var(--paper)]">
+                    <CircleDot className="h-4 w-4 text-[var(--signal)]" />
+                    Current profile
+                  </div>
+                  <div className="mt-2">
+                    {profile
+                      ? `${profile.name} · ${profile.email} · ${profile.riskProfile}`
+                      : "Loading local profile."}
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
-        </section>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-        <footer className="section-reveal flex flex-col gap-4 rounded-[2rem] border border-[var(--line)] bg-black/20 px-5 py-4 text-sm text-[var(--muted)] sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <Globe2 className="h-4 w-4 text-[var(--signal)]" />
-            Recipes keep explicit country and source scope so adding coverage is a registry task, not a UI fork.
-          </div>
-          <div className="flex items-center gap-3">
-            <RefreshCcw className="h-4 w-4 text-[var(--signal)]" />
-            Live routing always stays behind venue health, review score, and operator confirmation.
-          </div>
-        </footer>
+function EmptyState({ text }: { text: string }) {
+  return <div className="px-4 py-8 text-sm leading-7 text-[var(--muted)]">{text}</div>;
+}
+
+function RawSignalRow({ signal }: { signal: RawSignal }) {
+  return (
+    <div className="border-b border-[var(--line)] px-4 py-4 last:border-b-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-medium text-[var(--paper)]">{signal.title}</div>
+        <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+          {formatCountry(signal.country)}
+        </div>
+      </div>
+      <div className="mt-1 text-sm leading-6 text-[var(--muted)]">{signal.summary}</div>
+      <div className="mt-3 text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+        {signal.source} · {formatTimestamp(signal.publishedAt)}
+      </div>
+    </div>
+  );
+}
+
+function ReviewedSignalRow({ signal }: { signal: ReviewedSignal }) {
+  return (
+    <div className="border-b border-[var(--line)] px-4 py-4 last:border-b-0">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-medium text-[var(--paper)]">{signal.title}</div>
+        <div className="text-xs uppercase tracking-[0.18em] text-[var(--muted)]">
+          score {signal.reviewScore}
+        </div>
+      </div>
+      <div className="mt-1 text-sm leading-6 text-[var(--muted)]">{signal.thesis}</div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {signal.instrumentCandidates.map((instrument) => (
+          <span
+            key={`${instrument.venue}:${instrument.symbolOrToken}`}
+            className="rounded-full border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--paper)]"
+          >
+            {instrument.venue.toUpperCase()} · {instrument.symbolOrToken}
+          </span>
+        ))}
       </div>
     </div>
   );

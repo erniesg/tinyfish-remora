@@ -1,59 +1,57 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
-async function enterDemoCockpit(page: Page) {
-  await page.goto("/auth");
-  await expect(page.getByRole("heading", { name: "Start in demo mode," })).toBeVisible();
+test.describe("tinyfish-remora streamlined demo", () => {
+  test("home redirects straight into the workbench", async ({ page }) => {
+    await page.goto("/");
 
-  await page.getByRole("button", { name: /Create demo account|Enter demo cockpit/ }).click();
-
-  await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByText("Brand-first overview cockpit")).toBeVisible();
-}
-
-async function waitForRunToComplete(page: Page) {
-  await expect(page.getByText("Event ledger", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Receipt:/).first()).toBeVisible({ timeout: 30_000 });
-}
-
-test.describe("tinyfish-remora Playwright flows", () => {
-  test("demo auth entry redirects into dashboard cockpit", async ({ page }) => {
-    await enterDemoCockpit(page);
-
-    await expect(page.getByText("Retail investor cockpit")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Run Recipe" }).first()).toBeVisible();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByTestId("dashboard-workbench")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Run the scan. Review the signal. Replay the trade." })).toBeVisible();
+    await expect(page.getByTestId("launch-run")).toBeVisible();
   });
 
-  test("dashboard launch can run recipe and stream ledger activity", async ({ page }) => {
-    await enterDemoCockpit(page);
+  test("dashboard can launch a run and show review artifacts", async ({ page }) => {
+    await page.goto("/dashboard");
 
-    await expect(page.getByText("Streaming ledger")).toBeVisible();
-    await page.locator("#launch-section").getByRole("button", { name: "Launch Paper Run" }).click();
+    await page.getByTestId("launch-run").click();
 
-    await waitForRunToComplete(page);
-    await expect(page.getByText("Run board", { exact: true })).toBeVisible();
-    await expect(page.getByText(/Mandarin Policy Lag complete\./).first()).toBeVisible();
+    await expect(page.getByTestId("event-ledger").getByText(/complete|blocked/i).first()).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByTestId("raw-signals")).not.toContainText(
+      "Raw source hits land here after the collector step.",
+    );
+    await expect(page.getByTestId("reviewed-signals")).not.toContainText(
+      "Reviewed signals and tradeable instrument candidates show up here.",
+    );
   });
 
-  test("ask agent flow generates draft and supports save + paper preview", async ({ page }) => {
-    await enterDemoCockpit(page);
+  test("auth page can load a seeded profile and runs can be replayed from history", async ({
+    page,
+  }) => {
+    await page.goto("/auth");
 
-    const launchSection = page.locator("#launch-section");
-    await launchSection.getByRole("button", { name: "Ask Agent" }).click();
+    await expect(page.getByRole("heading", { name: "Local profiles" })).toBeVisible();
+    await page.getByRole("button", { name: "Use profile" }).first().click();
+    await expect(page.getByText(/Using .* on this device\./)).toBeVisible();
 
-    await launchSection.getByRole("button", { name: "Generate Draft" }).click();
+    await page.getByRole("button", { name: "Enter workbench" }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
 
-    await expect(launchSection.getByText("Generated run config", { exact: true })).toBeVisible();
-    await expect(launchSection.getByRole("button", { name: "Save Draft" })).toBeVisible();
+    await page.getByTestId("launch-run").click();
+    await expect(page.getByTestId("event-ledger").getByText(/complete|blocked/i).first()).toBeVisible({
+      timeout: 45_000,
+    });
 
-    await launchSection.getByRole("button", { name: "Save Draft" }).click();
-    await expect(launchSection.getByText("Awaiting draft")).toBeVisible();
+    const history = page.getByTestId("run-history");
+    await expect(history.getByRole("button", { name: "Replay" }).first()).toBeVisible();
+    const initialCount = await history.getByRole("button", { name: "Review" }).count();
 
-    await launchSection.getByRole("button", { name: "Generate Draft" }).click();
-    await expect(launchSection.getByRole("button", { name: "Run Paper Preview" })).toBeVisible();
-
-    await launchSection.getByRole("button", { name: "Run Paper Preview" }).click();
-
-    await waitForRunToComplete(page);
-    await expect(page.getByText("Run board", { exact: true })).toBeVisible();
+    await history.getByRole("button", { name: "Replay" }).first().click();
+    await expect
+      .poll(async () => history.getByRole("button", { name: "Review" }).count(), {
+        timeout: 45_000,
+      })
+      .toBeGreaterThan(initialCount);
   });
 });

@@ -21,7 +21,8 @@ const display = DM_Serif_Display({
 
 export const metadata: Metadata = {
   title: "tinyfish-remora",
-  description: "Hackathon demo for autonomous retail trading with TinyFish, IBKR, and Polymarket flows.",
+  description:
+    "End-to-end trading demo for TinyFish-driven signal collection, strategy generation, and paper or live execution review.",
 };
 
 export default function RootLayout({
@@ -33,6 +34,7 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${sans.variable} ${mono.variable} ${display.variable} h-full antialiased`}
+      data-scroll-behavior="smooth"
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
