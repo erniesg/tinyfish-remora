@@ -1,36 +1,74 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# tinyfish-remora
 
-## Getting Started
+`tinyfish-remora` is a standalone demo for an automated trading platform built around:
 
-First, run the development server:
+- predefined TinyFish signal recipes
+- autonomous strategy generation and saving
+- IBKR paper/live controls
+- Polymarket paper/live controls
+- live event streaming, receipts, positions, and P&L
+
+## What ships now
+
+- Next.js App Router demo with a cinematic landing page
+- local demo auth flow so the repo runs immediately
+- strategy studio that generates a structured trading strategy
+- venue connection forms with readiness checks
+- TinyFish-style streaming run timeline over SSE
+- paper/live promotion controls and live-updating demo P&L
+
+## Product model
+
+- Recipes collect market-relevant source data.
+- Strategies turn recipe outputs into saved, versioned playbooks.
+- Runs stream operator-visible events from collection through execution.
+- The cockpit keeps signals, decisions, receipts, positions, and P&L in one surface.
+
+## Run locally
+
+1. Load Node through `nvm`:
+
+```bash
+source ~/.nvm/nvm.sh
+```
+
+2. Install dependencies:
+
+```bash
+npm install
+```
+
+3. Start the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+4. Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Demo flow
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Open `/auth` and create a demo user.
+2. Visit `/dashboard`.
+3. Review the seeded IBKR paper and Polymarket paper connections.
+4. Launch the parallel recipe fanout.
+5. Watch the event ledger stream `STARTED`, `STREAMING_URL`, `PROGRESS`, `SIGNAL`, `REVIEW`, `DECISION`, `RECEIPT`, and `COMPLETE`.
+6. Generate a new strategy from the studio, save it, and run a paper preview.
+7. Toggle a saved strategy from paper to live to show the promotion gate.
 
-## Learn More
+## Local configuration
 
-To learn more about Next.js, take a look at the following resources:
+The repo runs in demo mode without third-party credentials. When you want to wire live services:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
+- Supabase: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- TinyFish: `TINYFISH_API_KEY`
+- IBKR: `IBKR_GATEWAY_URL`, `IBKR_ACCOUNT_ID`
+- Polymarket: `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYGON_PRIVATE_KEY`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Use these local-only files:
 
-## Deploy on Vercel
+- `.env.local` for real credentials and secrets
+- `AGENT_PRIVATE.local.md` for local operator instructions, account mappings, and private demo notes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Neither file should be committed.
