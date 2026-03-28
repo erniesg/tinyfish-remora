@@ -70,6 +70,7 @@ Only add these when a task needs them. They are not required for the current dem
 
 ### Polymarket
 
+- `POLYMARKET_GATEWAY_URL`
 - `POLYGON_PRIVATE_KEY`
 - `POLY_API_KEY`
 - `POLY_API_SECRET`
