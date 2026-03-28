@@ -313,7 +313,7 @@ async function collectRawSignals(
       },
       {
         bearerToken: config.tinyfishApiKey,
-        sharedSecret: config.remoraTradingSecret,
+        sharedSecret: config.tradingGatewaySharedSecret,
         timeoutMs: 15_000,
       },
     );
@@ -364,7 +364,7 @@ async function reviewSignal(
       },
       {
         bearerToken: config.openAiApiKey,
-        sharedSecret: config.remoraTradingSecret,
+        sharedSecret: config.tradingGatewaySharedSecret,
       },
     );
     const payload = readObjectCandidate(response, ["reviewedSignal", "review"]);
@@ -421,7 +421,7 @@ async function executeIntent(
       },
       {
         bearerToken,
-        sharedSecret: config.remoraTradingSecret,
+        sharedSecret: config.tradingGatewaySharedSecret,
         headers:
           intent.venue === "ibkr" && config.ibkrAccountId
             ? { "x-ibkr-account-id": config.ibkrAccountId }

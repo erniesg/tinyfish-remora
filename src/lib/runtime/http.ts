@@ -22,6 +22,7 @@ export async function postRuntimeJson<T>(
   }
 
   if (options.sharedSecret) {
+    headers.set("x-trading-gateway-secret", options.sharedSecret);
     headers.set("x-remora-trading-secret", options.sharedSecret);
   }
 

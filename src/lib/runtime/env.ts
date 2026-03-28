@@ -1,5 +1,8 @@
 import "server-only";
 
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+
 import type { VenueConnection } from "@/lib/demo/types";
 import type { RuntimeProviderStatus, RuntimeStatusResponse } from "@/lib/runtime/types";
 
@@ -11,7 +14,7 @@ export interface RuntimeConfig {
   ibkrAccountId?: string;
   ibkrApiToken?: string;
   ibkrGatewayUrl?: string;
-  remoraTradingSecret?: string;
+  tradingGatewaySharedSecret?: string;
   polyApiKey?: string;
   polyApiSecret?: string;
   polyPassphrase?: string;
@@ -21,10 +24,53 @@ export interface RuntimeConfig {
   polymarketGatewayUrl?: string;
 }
 
+let cachedDevVars: Record<string, string> | null = null;
+
+function loadDevVars(): Record<string, string> {
+  if (cachedDevVars) return cachedDevVars;
+  if (process.env.NODE_ENV === "production") {
+    cachedDevVars = {};
+    return cachedDevVars;
+  }
+
+  const candidates = [
+    path.join(/*turbopackIgnore: true*/ process.cwd(), ".dev.vars"),
+    path.join(/*turbopackIgnore: true*/ process.cwd(), ".dev.vars.local"),
+  ];
+  const values: Record<string, string> = {};
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+
+    const contents = readFileSync(candidate, "utf8");
+    for (const rawLine of contents.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+
+      const delimiterIndex = line.indexOf("=");
+      if (delimiterIndex <= 0) continue;
+
+      const key = line.slice(0, delimiterIndex).trim();
+      const value = line.slice(delimiterIndex + 1).trim().replace(/^['"]|['"]$/g, "");
+      if (key && value) {
+        values[key] = value;
+      }
+    }
+  }
+
+  cachedDevVars = values;
+  return values;
+}
+
 function readEnv(...names: string[]): string | undefined {
+  const devVars = loadDevVars();
+
   for (const name of names) {
     const value = process.env[name]?.trim();
     if (value) return value;
+
+    const devVarValue = devVars[name]?.trim();
+    if (devVarValue) return devVarValue;
   }
 
   return undefined;
@@ -85,7 +131,7 @@ export function getRuntimeConfig(): RuntimeConfig {
     ibkrAccountId: readEnv("IBKR_ACCOUNT_ID"),
     ibkrApiToken: readEnv("IBKR_API_TOKEN"),
     ibkrGatewayUrl: readEnv("IBKR_GATEWAY_URL"),
-    remoraTradingSecret: readEnv("REMORA_TRADING_SECRET"),
+    tradingGatewaySharedSecret: readEnv("TRADING_GATEWAY_SHARED_SECRET", "REMORA_TRADING_SECRET"),
     polyApiKey: readEnv("POLY_API_KEY", "POLYMARKET_API_KEY"),
     polyApiSecret: readEnv("POLY_API_SECRET", "POLYMARKET_API_SECRET"),
     polyPassphrase: readEnv("POLY_PASSPHRASE", "POLYMARKET_PASSPHRASE"),

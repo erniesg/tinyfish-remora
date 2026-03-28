@@ -35,6 +35,7 @@ yarn-error.log*
 
 # env files
 .env*
+.dev.vars*
 AGENT_PRIVATE.local.md
 
 # vercel

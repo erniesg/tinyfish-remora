@@ -380,7 +380,7 @@ export function buildSeedConnections(): VenueConnection[] {
       description: "Live broker connection with contract resolution and order preview gates.",
       fields: {
         accountId: "U1093829",
-        gatewayUrl: "https://ibkr-proxy.remora.demo",
+        gatewayUrl: "https://ibkr-gateway.tinyfish.local",
         apiToken: "",
       },
       status: "warning",
@@ -393,7 +393,7 @@ export function buildSeedConnections(): VenueConnection[] {
       label: "Polymarket Paper",
       description: "Paper ledger for divergence validation before production routing.",
       fields: {
-        gatewayUrl: "https://polymarket-gateway.remora.demo/orders",
+        gatewayUrl: "https://polymarket-gateway.tinyfish.local/orders",
         walletAddress: "0xF56E9C1Ea4D430c4208891aB73E127Cd1aFd0091",
         apiKey: "paper-simulated",
       },
@@ -407,7 +407,7 @@ export function buildSeedConnections(): VenueConnection[] {
       label: "Polymarket Live",
       description: "Two-layer auth flow with L1 wallet signing and L2 API credentials.",
       fields: {
-        gatewayUrl: "https://polymarket-gateway.remora.demo/orders",
+        gatewayUrl: "https://polymarket-gateway.tinyfish.local/orders",
         walletAddress: "0xB857cf0dA1346fAb27B21d47b4b4aDAc88066431",
         apiKey: "pm-live-demo-key",
         apiSecret: "",
