@@ -35,7 +35,7 @@ source ~/.nvm/nvm.sh
 2. Install dependencies:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 ```
 
 3. Start the app:
@@ -55,6 +55,37 @@ npm run dev
 5. Watch the event ledger stream `STARTED`, `STREAMING_URL`, `PROGRESS`, `SIGNAL`, `REVIEW`, `DECISION`, `RECEIPT`, and `COMPLETE`.
 6. Generate a new strategy from the studio, save it, and run a paper preview.
 7. Toggle a saved strategy from paper to live to show the promotion gate.
+
+## Automated share purchases — local simulation
+
+Feature requirements: [#26](https://github.com/erniesg/tinyfish-remora/issues/26). Open **Buy shares** in the cockpit, or `/dashboard/purchases`. Preview and save a bounded mandate, edit an inactive draft using its saved values and a fresh preview, then arm its local simulation. Revision checks prevent stale cards from arming changed terms; an armed or submitted mandate cannot be edited. A standalone worker checks due purchases without a browser, persists intent before submission, and reconciles unknown outcomes rather than resubmitting. Saved status and order evidence come from the server, not browser storage. Unresolved listing currency/exchange/timezone stay unknown; provisional draft amounts in the account planning currency never grant purchase authority.
+
+In two terminals, use the **same absolute private store path**, outside the checkout:
+
+```bash
+export REMORA_PURCHASE_MODE=mock
+export REMORA_PURCHASE_STORE="$HOME/.local/state/tinyfish-remora/purchases.json"
+npm run dev -- --hostname 127.0.0.1
+# Second terminal, with the same exports:
+npm run purchases:worker
+```
+
+Mutations are loopback-only and disabled unless both variables are set. No purchase route connects to IBKR; paper/live activation is unavailable. All sample contracts, balances, calendars and fills are mocked. USD, SGD and GBP balances are separate: there is no borrowing or automatic conversion. Scheduled/opening/first-trade purchases use bounded regular-session limit orders, not guaranteed opening-auction fills. Unconfirmed listings stay blocked; first-tradability and unsupported combinations are explicit. Calendars include selected fixture holidays only, not authoritative exchange calendars.
+
+The dashboard shows the last observed scheduling check; a recent heartbeat cannot guarantee future execution. Stop all purchases revokes mandates and requests cancellation, but never undoes fills. Resuming permits new mandates only. This is a single-host local runner, not a distributed live service. The local store uses exclusive locking and durable atomic writes. After a crashed process leaves a lock, stop all users of that store, preserve a copy, reconcile its intents, and only then remove a stale `.lock` directory; never delete the purchase database to retry an unknown order.
+
+Validation (no broker credentials needed):
+
+```bash
+npm run test:purchases
+npm run test:purchases:ui
+npm run lint
+npm run build
+```
+
+The isolated UI test starts its own app/store; stop another `next dev` in this checkout first. Install the Playwright Chromium runtime if absent, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to an existing compatible executable. Backend tests cover delayed first trading, supported venues, stale quotes, holidays/DST, expiry/revocation, partial fills/halt/cancel, limits and restart recovery. These are deterministic mock/transport checks, **not actual IBKR paper or live proof**.
+
+[IBKR capabilities and current official sources](docs/ibkr-purchase-capabilities.md) explain Singapore/account eligibility, daily interactive authentication, per-venue unknowns and separate manual IPO allocation. The dependency-injected Client Portal adapters and inactive server HTTP transport implement broker protocols. The purchase API/worker never construct that transport or route actual orders; HTTP failures never trigger blind retries. Listing identity, account permissions and real-time tradability require trusted evidence; absent evidence blocks execution. No funding, credentials/access, subscriptions, account changes, paid resources or deployment are authorised by this local workflow.
 
 ## Local configuration
 
