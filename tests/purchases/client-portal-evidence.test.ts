@@ -41,10 +41,25 @@ test("maps real endpoint protocols to conservative preflight without routing aut
   assert.deepEqual(r.reasons, []); assert.equal(r.availableCash, 900); assert.equal(r.quote, 101);
   assert.equal(r.quoteAt, now.toISOString()); assert.equal(r.open, true); assert.equal(r.calendarKnown, true);
   assert.equal(r.permitted, true); assert.equal(r.halted, false); assert.equal(r.dataEntitled, true);
+  assert.equal(r.validUntil, "2026-03-09T14:00:30.000Z");
+  assert.equal(r.sessionOpensAt, "2026-03-09T13:30:00.000Z");
+  assert.equal(r.sessionClosesAt, "2026-03-09T20:00:00.000Z");
   assert.equal(h.adapter.executionAllowed(), false);
   assert.equal(h.calls[0], "/iserver/secdef/search?symbol=Example%20Issuer&name=true&secType=STK");
   assert.equal(h.calls[1], "/iserver/secdef/info?conid=123&sectype=STK&exchange=NYSE");
   assert.equal(h.calls.length, 5);
+});
+
+test("preflight preserves the earliest listing/trading/quote validity horizon across awaited collection", async () => {
+  for (const source of ["listing", "trading", "quote"]) {
+    const expiry = "2026-03-09T14:00:01Z";
+    const h = harness(source === "quote" ? { snapshot: [{ ...quote[0], _updated: now.getTime() - 29000 }] } : {},
+      source === "listing" ? { ...proof, validUntil: expiry } : proof,
+      source === "trading" ? { ...trading, validUntil: expiry } : trading);
+    const r = await h.adapter.preflight(purchase, instrument, now);
+    assert.deepEqual(r.reasons, []);
+    assert.equal(r.validUntil, "2026-03-09T14:00:01.000Z");
+  }
 });
 
 test("generic permission alone leaves venue, quantity, price-unit and fee evidence explicitly unknown", async () => {

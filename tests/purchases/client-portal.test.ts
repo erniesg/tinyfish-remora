@@ -6,7 +6,7 @@ import { catalog } from "../../src/lib/purchases/catalog";
 import type { Purchase } from "../../src/lib/purchases/types";
 
 const p: Purchase = { instrumentSnapshot: { ...catalog[0], evidence: "broker-verified" }, accountMode: "paper", id: "mandate", accountId: "test-paper", instrumentId: "aapl-nasdaq", trigger: "schedule", scheduledAt: "2026-06-15T14:00:00Z", expiresAt: "2026-06-15T20:00:00Z", timezone: "Asia/Singapore", session: "regular", shares: 2, limitPrice: 110, buffer: 5, maxSpend: 225, createdAt: "2026-06-15T13:00:00Z", state: "armed", cancellationPolicy: "cancel-remainder-at-expiry-or-session-end", reasons: [], receipts: [], executions: [], filledShares: 0, spent: 0, reserved: 225, intentId: "durable-intent", contract: { conid: 265598, currency: "USD", exchange: "NASDAQ", evidence: "broker-verified" } };
-const f: Preflight = { accountId: "test-paper", accountMode: "paper", currency: "USD", availableCash: 1000, cashSettled: true, authenticated: true, sessionReady: true, permitted: true, dataEntitled: true, quote: 100, quoteAt: "2026-06-15T14:00:00Z", quoteCurrency: "USD", calendarKnown: true, open: true, firstTrade: true, halted: false, closedForDay: false, reasons: [] };
+const f: Preflight = { validUntil: "2026-06-15T14:00:30Z", sessionOpensAt: "2026-06-15T13:30:00Z", sessionClosesAt: "2026-06-15T20:00:00Z", accountId: "test-paper", accountMode: "paper", currency: "USD", availableCash: 1000, cashSettled: true, authenticated: true, sessionReady: true, permitted: true, dataEntitled: true, quote: 100, quoteAt: "2026-06-15T14:00:00Z", quoteCurrency: "USD", calendarKnown: true, open: true, firstTrade: true, halted: false, closedForDay: false, reasons: [] };
 const evidence: ClientPortalEvidence = { preflight: async () => f, executionAllowed: () => false };
 
 test("actual adapter fails closed under execution holds and forbids fixtures even with injected test authority", async () => {
@@ -19,8 +19,8 @@ test("actual adapter fails closed under execution holds and forbids fixtures eve
 test("dependency-injected Client Portal adapter emits bounded limit order, never confirms warnings", async () => {
   const requests: { method: string; path: string; body: unknown }[] = [];
   const transport: ClientPortalTransport = async (method, path, body) => { requests.push({ method, path, body }); return [{ id: "warning-reply-id", message: ["Confirm order?"] }]; };
-  const adapter = new ClientPortalBroker(transport, "test-paper", "paper", { ...evidence, executionAllowed: (mode, account) => mode === "paper" && account === "test-paper" });
-  const result = await adapter.submit(p, { ...catalog[0], evidence: "broker-verified" });
+  const adapter = new ClientPortalBroker(transport, "test-paper", "paper", { ...evidence, executionAllowed: (mode, account) => mode === "paper" && account === "test-paper" }, () => new Date(f.quoteAt!));
+  const result = await adapter.submit(p, { ...catalog[0], evidence: "broker-verified" }, f);
   assert.equal(result.state, "unknown");
   assert.deepEqual(requests, [{ method: "POST", path: "/iserver/account/test-paper/orders", body: { orders: [{ acctId: "test-paper", conid: 265598, cOID: "durable-intent", orderType: "LMT", side: "BUY", quantity: 2, price: 110, tif: "DAY", outsideRTH: false }] } }]);
 });

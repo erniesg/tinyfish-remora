@@ -31,21 +31,25 @@ export function validateDatabase(value: unknown): asserts value is Database {
     const owners = new Map<string, { currency: string; shares: number }>();
     for (const item of db.purchases as unknown[]) {
       const p = obj(item); validateInput(p);
+      if (p.revision !== undefined && (!Number.isSafeInteger(p.revision) || Number(p.revision) < 0)) fail();
       const instrument = obj(p.instrumentSnapshot);
       if (instrument.id !== p.instrumentId || !["mock", "paper", "live"].includes(String(p.accountMode)) ||
-        !["id", "issuer", "exchange", "currency", "shareClass", "timezone"].every(k => text(instrument[k])) ||
+        !["id", "issuer"].every(k => text(instrument[k])) || !["exchange", "currency", "shareClass", "timezone"].every(k => typeof instrument[k] === "string") ||
         (instrument.symbol !== null && !text(instrument.symbol)) ||
         (instrument.conid !== null && (!Number.isSafeInteger(instrument.conid) || Number(instrument.conid) <= 0)) ||
         !["fixture", "broker-verified"].includes(String(instrument.evidence)) ||
         !["verified", "unconfirmed", "ambiguous"].includes(String(instrument.listing)) ||
         !Array.isArray(instrument.supportedTriggers) || instrument.supportedTriggers.some(t => !["schedule", "opening", "first-trade"].includes(String(t))) || !strings(instrument.reasons)) fail();
-      if (instrument.listing === "verified" && (!text(instrument.symbol) || !Number.isSafeInteger(instrument.conid) || Number(instrument.conid) <= 0)) fail();
-      new Intl.DateTimeFormat("en-US", { timeZone: String(instrument.timezone) });
+      if (instrument.listing === "verified" && (!text(instrument.symbol) || !Number.isSafeInteger(instrument.conid) || Number(instrument.conid) <= 0 || !["exchange", "currency", "shareClass", "timezone"].every(k => text(instrument[k])))) fail();
+      if (instrument.timezone) new Intl.DateTimeFormat("en-US", { timeZone: String(instrument.timezone) });
+      if (instrument.listing !== "verified" && (p.reserved !== 0 || p.intentId !== undefined || p.filledShares !== 0 || p.spent !== 0)) fail();
       if ( !text(p.id) || ids.has(p.id as string) || !date(p.createdAt) || !states.has(String(p.state)) || !strings(p.reasons) || p.cancellationPolicy !== "cancel-remainder-at-expiry-or-session-end" || !Array.isArray(p.receipts) || (p.revoked !== undefined && typeof p.revoked !== "boolean") || (p.stopRequested !== undefined && !["revoked", "cancelled", "expired"].includes(String(p.stopRequested)))) fail();
       ids.add(p.id as string);
       if (!nonnegative(p.spent) || !nonnegative(p.reserved) || !Number.isSafeInteger(p.filledShares) || Number(p.filledShares) < 0 || Number(p.filledShares) > Number(p.shares) || p.spent > Number(p.maxSpend) || p.reserved > Number(p.maxSpend) || p.spent + p.reserved > Number(p.maxSpend) + 0.000001) fail();
       const fills = executions(p.executions, String(instrument.currency));
       if (fills.some(e => e.fee === null || e.price > Number(p.limitPrice)) || fills.reduce((n, e) => n + e.quantity, 0) !== p.filledShares || !near(Math.ceil(cost(fills) * 100) / 100, Number(p.spent))) fail();
+      if (p.submitPhase !== undefined && (!p.intentId || !["prepared", "attempted"].includes(String(p.submitPhase)))) fail();
+      if (p.submitPhase === "prepared" && (p.brokerOrderId !== undefined || p.filledShares !== 0 || p.spent !== 0 || !["reconciliation-required", "cancelled", "expired", "revoked"].includes(String(p.state)))) fail();
       if (p.intentId !== undefined) {
         if (!text(p.intentId) || intents.has(p.intentId as string) || ["draft", "armed", "waiting-for-listing", "waiting-for-opening", "blocked"].includes(String(p.state))) fail();
         const contract = obj(p.contract);
@@ -72,6 +76,7 @@ export function validateDatabase(value: unknown): asserts value is Database {
     const executionIds = new Set<string>(), orderIds = new Set<string>();
     for (const [key, item] of Object.entries(orders)) {
       const o = obj(item), owner = owners.get(key);
+      if ((db.purchases as Record<string, unknown>[]).some(p => p.intentId === key && p.submitPhase === "prepared")) fail();
       if (!owner || o.intentId !== key || !text(o.orderId) || orderIds.has(o.orderId as string) || !["submitted", "partially-filled", "filled", "cancelled", "rejected", "unknown"].includes(String(o.state)) || !Number.isSafeInteger(o.filledShares) || Number(o.filledShares) < 0 || Number(o.filledShares) > owner!.shares || (o.state === "filled" && o.filledShares !== owner!.shares) || !nonnegative(o.spent) || typeof o.feesKnown !== "boolean") fail();
       orderIds.add(o.orderId as string);
       const fills = executions(o.executions, owner!.currency);

@@ -83,6 +83,7 @@ export async function resolveClientPortalContract(transport: ClientPortalTranspo
 
 export interface CalendarEvidence {
   calendarKnown: boolean; open: boolean; closedForDay: boolean; reasons: string[];
+  sessionOpensAt?: string; sessionClosesAt?: string;
 }
 const dateKey = (now: Date, timezone: string) => {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
@@ -111,7 +112,10 @@ export function clientPortalCalendar(response: unknown, now: Date): CalendarEvid
       }
     }
     const t = now.getTime() / 1000;
-    return { calendarKnown: true, open: intervals.some(h => t >= h.opening && t < h.closing), closedForDay: !intervals.length || intervals.every(h => t >= h.closing), reasons: [] };
+    const current = intervals.find(h => t >= h.opening && t < h.closing);
+    return { calendarKnown: true, open: !!current, closedForDay: !intervals.length || intervals.every(h => t >= h.closing), reasons: [],
+      sessionOpensAt: current ? new Date(current.opening * 1000).toISOString() : undefined,
+      sessionClosesAt: current ? new Date(current.closing * 1000).toISOString() : undefined };
   } catch { return unknown; }
 }
 
@@ -186,6 +190,13 @@ export class ClientPortalReadonlyEvidence implements ClientPortalEvidence {
       } else result.reasons.push("Fresh real-time last/bid/ask and millisecond _updated required.");
       const calendar = clientPortalCalendar(await this.transport("GET", `/contract/trading-schedule?conid=${i.conid}&exchange=${encodeURIComponent(i.exchange)}`), now);
       Object.assign(result, { calendarKnown: calendar.calendarKnown, open: calendar.open, closedForDay: calendar.closedForDay });
+      result.sessionOpensAt = calendar.sessionOpensAt;
+      result.sessionClosesAt = calendar.sessionClosesAt;
+      // Bound every result to the oldest source, including injected listing and
+      // trading-state proof. Later auth/account requests cannot extend this lease.
+      const horizon = Math.min(Date.parse(proof!.validUntil), Date.parse(state?.validUntil ?? ""), now.getTime() + 30000,
+        Date.parse(result.quoteAt ?? "") + this.maxQuoteAgeMs);
+      if (Number.isFinite(horizon)) result.validUntil = new Date(horizon).toISOString();
       result.reasons.push(...calendar.reasons);
     } catch {
       result.permitted = false; result.open = false;

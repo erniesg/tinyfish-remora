@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { catalog, fixtureMarket, localTime, resolveContract } from "./catalog";
-import { MockBroker, mockAccount } from "./broker";
+import { evidenceTimeReasons, OrderNotSent, MockBroker, mockAccount } from "./broker";
 import type { Broker, BrokerOrder, Preflight } from "./broker";
 import { PurchaseStore } from "./store";
 import { validateInput } from "./input";
@@ -12,6 +12,13 @@ const active = new Set(["submitted", "partially-filled", "cancellation-pending",
 const money = (value: number) => Math.ceil(value * 100) / 100;
 export { validateInput } from "./input";
 export interface PurchaseContext { catalog: Instrument[]; account: AccountStatus }
+export class RevisionConflictError extends Error {
+  constructor() { super("Purchase revision conflict. Reload and review the current draft before editing or arming."); }
+}
+function checkRevision(p: Purchase, expected: number) {
+  if (!Number.isSafeInteger(expected) || expected < 0) throw new Error("expectedRevision must be a nonnegative safe integer.");
+  if (expected !== (p.revision ?? 0)) throw new RevisionConflictError();
+}
 const mockContext: PurchaseContext = { catalog, account: mockAccount };
 const sameListing = (a: Instrument, b: Instrument) =>
   (["id", "issuer", "symbol", "conid", "exchange", "currency", "shareClass", "timezone", "evidence", "listing"] as const).every(key => a[key] === b[key]);
@@ -21,6 +28,9 @@ export function preview(input: MandateInput, now = new Date(), context: Purchase
   const resolution = resolveContract(selected);
   const instrument = selected[0] ?? null;
   const reasons = [...resolution.reasons];
+  const estimatedMaximum = money(input.shares * input.limitPrice + input.buffer);
+  // Unresolved listing attributes are unknown, not evidence of unsupported venues.
+  if (!resolution.instrument) return { supported: false, reasons, estimatedMaximum, instrument };
   if (instrument && !instrument.supportedTriggers.includes(input.trigger)) reasons.push("This listing does not support the selected trigger.");
   if (input.accountId !== account.id) reasons.push("Select the exact server-configured account; no account substitution is authorised.");
   if (instrument && !Object.hasOwn(account.cashBalances, instrument.currency)) reasons.push(`No ${instrument.currency} cash balance; no FX conversion or borrowing is authorised.`);
@@ -33,7 +43,6 @@ export function preview(input: MandateInput, now = new Date(), context: Purchase
     const currentDate = localTime(now, instrument.timezone).date;
     if (market.closedForDay || currentDate > targetDate || (currentDate === targetDate && fixtureMarket(instrument, now).closedForDay)) reasons.push("The selected exchange session is closed or already ended. Choose a trading day and a start time before its close; purchases never roll to a later session.");
   }
-  const estimatedMaximum = money(input.shares * input.limitPrice + input.buffer);
   if (estimatedMaximum > input.maxSpend) reasons.push("Maximum spend must cover all shares at the limit plus the fees/FX buffer.");
   const cash = account.cashBalances[instrument?.currency ?? ""] ?? 0;
   if (!Number.isFinite(cash) || cash < 0 || input.maxSpend > cash) reasons.push("Insufficient or unknown available cash in the listing currency.");
@@ -120,28 +129,45 @@ export class PurchaseService {
       const now = this.clock();
       const selected = this.context.catalog.filter(i => i.id === input.instrumentId);
       if (selected.length !== 1) throw new Error("Unknown or ambiguous instrument; select an exact catalog listing.");
-      const p: Purchase = { ...input, instrumentSnapshot: structuredClone(selected[0]), accountMode: this.context.account.mode, id: randomUUID(), createdAt: now.toISOString(), state: "draft", cancellationPolicy: "cancel-remainder-at-expiry-or-session-end", reasons: this.preview(input, now).reasons, filledShares: 0, spent: 0, reserved: 0, receipts: [], executions: [] };
+      const p: Purchase = { ...input, instrumentSnapshot: structuredClone(selected[0]), accountMode: this.context.account.mode, id: randomUUID(), createdAt: now.toISOString(), revision: 0, state: "draft", cancellationPolicy: "cancel-remainder-at-expiry-or-session-end", reasons: this.preview(input, now).reasons, filledShares: 0, spent: 0, reserved: 0, receipts: [], executions: [] };
       receipt(p, this.brokerFactory(tx), now, "created", "Bounded mandate saved. Not armed.");
       tx.data.purchases.push(p);
       return p;
     });
   }
-  async action(id: string, action: "arm" | "revoke" | "cancel" | "refresh") {
+  async editDraft(id: string, value: unknown, expectedRevision: number) {
+    return this.store.transaction(async tx => {
+      const p = tx.data.purchases.find(x => x.id === id);
+      if (!p) throw new Error("Purchase not found.");
+      checkRevision(p, expectedRevision);
+      if (!["draft", "blocked", "waiting-for-listing"].includes(p.state) || p.intentId || p.contract || p.brokerOrderId || p.submitPhase || p.reserved !== 0 || p.revoked || p.stopRequested || p.filledShares !== 0 || p.spent !== 0 || p.executions.length || p.receipts.some(r => ["armed", "waiting-for-opening", "intent-created"].includes(r.kind))) throw new Error("Only never-armed inactive drafts can be edited. Existing authority cannot be revised.");
+      if ((p.revision ?? 0) === Number.MAX_SAFE_INTEGER) throw new Error("Draft revision limit reached.");
+      const input = validateInput(value);
+      const selected = this.context.catalog.filter(i => i.id === input.instrumentId);
+      if (selected.length !== 1) throw new Error("Unknown or ambiguous instrument; select an exact catalog listing.");
+      const now = this.clock();
+      Object.assign(p, input, { instrumentSnapshot: structuredClone(selected[0]), accountMode: this.context.account.mode, revision: (p.revision ?? 0) + 1, state: "draft", reasons: this.preview(input, now).reasons });
+      receipt(p, this.brokerFactory(tx), now, "revised", `Draft revised to revision ${p.revision}. Not armed.`);
+      return p;
+    });
+  }
+  async action(id: string, action: "arm" | "revoke" | "cancel" | "refresh", expectedRevision?: number) {
     return this.store.transaction(async tx => {
       const p = tx.data.purchases.find(x => x.id === id);
       if (!p) throw new Error("Purchase not found.");
       const broker = this.brokerFactory(tx), now = this.clock();
       if (action === "refresh") {
-        if (p.intentId && !terminal.has(p.state)) await this.reconcile(p, broker, now);
+        if (p.intentId && p.submitPhase !== "prepared" && !terminal.has(p.state)) await this.reconcile(p, broker, now);
       } else if (action === "arm") {
+        if (expectedRevision !== undefined) checkRevision(p, expectedRevision);
         if (p.intentId || p.revoked || terminal.has(p.state)) throw new Error("This mandate cannot be rearmed or replaced. Create a new bounded mandate only after reconciliation.");
         const result = this.preview(p, now);
         const currency = p.instrumentSnapshot.currency;
-        const reserved = tx.data.purchases.filter(x => x.id !== p.id && x.instrumentSnapshot.currency === currency).reduce((n, x) => n + x.reserved + x.spent, 0);
+        const reserved = result.instrument?.listing === "verified" ? tx.data.purchases.filter(x => x.id !== p.id && x.instrumentSnapshot.currency === currency).reduce((n, x) => n + x.reserved + x.spent, 0) : 0;
         const reasons = [...result.reasons];
         if (!result.instrument || !sameListing(p.instrumentSnapshot, result.instrument) || p.accountMode !== this.context.account.mode) reasons.push("Frozen listing/account mode no longer matches trusted context; create a new mandate, never retarget.");
         if (tx.data.killSwitch) reasons.push("Kill switch is enabled.");
-        if (!Number.isFinite(reserved) || money(reserved + p.maxSpend) > (this.context.account.cashBalances[currency ?? ""] ?? 0)) reasons.push("Available cash is reserved by other mandates.");
+        if (result.instrument?.listing === "verified" && (!Number.isFinite(reserved) || money(reserved + p.maxSpend) > (this.context.account.cashBalances[currency ?? ""] ?? 0))) reasons.push("Available cash is reserved by other mandates.");
         if (reasons.length) { p.state = result.instrument?.listing === "unconfirmed" ? "waiting-for-listing" : "blocked"; p.reasons = reasons; p.reserved = 0; }
         else { p.state = "armed"; p.reserved = p.maxSpend; p.reasons = []; }
         receipt(p, broker, now, p.state, reasons.join(" ") || "Bounded mandate armed for unattended execution within the injected authority.");
@@ -172,7 +198,7 @@ export class PurchaseService {
   private async stop(p: Purchase, broker: Broker, now: Date, state: "revoked" | "cancelled" | "expired", tx: Transaction) {
     if (terminal.has(p.state)) return;
     p.stopRequested ??= state;
-    if (!p.intentId) { p.state = state; p.reserved = 0; p.reasons = [state === "expired" ? "Mandate or approved session expired; no rollover." : "Mandate stopped."]; }
+    if (!p.intentId || p.submitPhase === "prepared") { p.state = state; p.reserved = 0; p.reasons = [state === "expired" ? "Mandate or approved session expired; no rollover." : "Mandate stopped."]; }
     else {
       p.state = "cancellation-pending";
       receipt(p, broker, now, "cancellation-pending", `${state}: cancellation requested; acceptance is not confirmation.`);
@@ -187,17 +213,22 @@ export class PurchaseService {
   }
   async tick() {
     return this.store.transaction(async tx => {
-      const broker = this.brokerFactory(tx), now = this.clock();
+      const broker = this.brokerFactory(tx);
       for (const p of tx.data.purchases) {
         if (terminal.has(p.state)) continue;
+        let now = this.clock();
         const instrument = p.instrumentSnapshot;
+        if (instrument.listing !== "verified") {
+          if (p.stopRequested || tx.data.killSwitch || p.revoked || now.getTime() >= Date.parse(p.expiresAt)) await this.stop(p, broker, now, p.stopRequested ?? (p.revoked || tx.data.killSwitch ? "revoked" : "expired"), tx);
+          continue; // No exchange session/currency can be inferred for an unresolved issuer.
+        }
         const sessionDate = localTime(new Date(p.scheduledAt), instrument.timezone).date;
         const currentDate = localTime(now, instrument.timezone).date;
         if (p.stopRequested || tx.data.killSwitch || p.revoked || now.getTime() >= Date.parse(p.expiresAt) || currentDate > sessionDate) {
           await this.stop(p, broker, now, p.stopRequested ?? (p.revoked || tx.data.killSwitch ? "revoked" : "expired"), tx); continue;
         }
         if (p.state === "draft" || p.state === "waiting-for-listing") continue;
-        if (p.intentId || active.has(p.state)) {
+        if ((p.intentId || active.has(p.state)) && p.submitPhase !== "prepared") {
           await this.reconcile(p, broker, now);
           if (!terminal.has(p.state)) {
             const f = await broker.preflight(p, instrument, now).catch(() => null);
@@ -215,25 +246,53 @@ export class PurchaseService {
         if (!resolution.instrument) { p.state = "waiting-for-listing"; p.reasons = resolution.reasons; continue; }
         let f: Preflight;
         try { f = await broker.preflight(p, instrument, now); } catch { p.state = "blocked"; p.reasons = ["Broker preflight unavailable."]; continue; }
+        now = this.clock();
+        if (now.getTime() >= Date.parse(p.expiresAt) || localTime(now, instrument.timezone).date > sessionDate || f.closedForDay || (f.sessionClosesAt && now.getTime() >= Date.parse(f.sessionClosesAt))) {
+          await this.stop(p, broker, now, "expired", tx); continue;
+        }
         const reasons = preflightReasons(p, instrument, f, now);
+        if (f.open && f.firstTrade) reasons.push(...evidenceTimeReasons(p, f, now));
         if (!current[0].supportedTriggers.includes(p.trigger)) reasons.push("Selected trigger is no longer supported by the trusted listing context.");
         if ((broker.evidence === "mock") !== (p.accountMode === "mock")) reasons.push("Broker evidence mode does not match the frozen account mode.");
         const committed = tx.data.purchases.filter(x => x.instrumentSnapshot.currency === instrument.currency).reduce((n, x) => n + x.spent + x.reserved, 0);
         if (!Number.isFinite(committed) || !Number.isFinite(f.availableCash) || f.availableCash < 0 || committed > f.availableCash) reasons.push("Insufficient unreserved cash for aggregate mandates.");
-        if (reasons.length) { p.state = "blocked"; p.reasons = reasons; continue; }
+        if (reasons.length) { p.state = p.intentId ? "reconciliation-required" : "blocked"; p.reasons = reasons; continue; }
         if (f.closedForDay) { await this.stop(p, broker, now, "expired", tx); continue; }
-        if (!f.open || !f.firstTrade) { p.state = "waiting-for-opening"; p.reasons = ["Waiting for broker-confirmed regular session and instrument tradability; exchange opening alone is insufficient."]; continue; }
+        if (!f.open || !f.firstTrade) { p.state = p.intentId ? "reconciliation-required" : "waiting-for-opening"; p.reasons = ["Waiting for broker-confirmed regular session and instrument tradability; exchange opening alone is insufficient."]; continue; }
         p.contract = { conid: instrument.conid, exchange: instrument.exchange, currency: instrument.currency, evidence: instrument.evidence };
-        p.intentId = randomUUID();
+        if (!p.intentId) {
+          p.intentId = randomUUID();
+          receipt(p, broker, now, "intent-created", "Durable intent prepared before submit.");
+        }
+        p.submitPhase = "prepared";
         p.state = "reconciliation-required";
         p.reasons = ["Durable intent persisted before submit. Unknown outcomes must reconcile, never resubmit."];
-        receipt(p, broker, now, "intent-created", p.reasons[0]);
         await tx.save();
-        try { applyOrder(p, await broker.submit(p, instrument), broker, now); }
-        catch { p.state = "reconciliation-required"; p.reasons = ["Submission response unavailable. Reconcile by durable intent; no automatic retry."]; }
+        // Persist the uncertain/attempted boundary before any write. A crash from
+        // here is unknown; only this running process can prove a local NOT SENT.
+        p.submitPhase = "attempted";
+        await tx.save();
+        now = this.clock();
+        const lateReasons = evidenceTimeReasons(p, f, now);
+        if (lateReasons.length) {
+          p.submitPhase = "prepared";
+          p.reasons = lateReasons;
+          receipt(p, broker, now, "not-sent", lateReasons.join(" "));
+          if (now.getTime() >= Date.parse(p.expiresAt) || now.getTime() >= Date.parse(f.sessionClosesAt ?? "")) await this.stop(p, broker, now, "expired", tx);
+          continue; // Same durable identity may recover with fresh evidence next tick.
+        }
+        try { applyOrder(p, await broker.submit(p, instrument, f), broker, this.clock()); }
+        catch (error) {
+          p.state = "reconciliation-required";
+          if (error instanceof OrderNotSent) {
+            p.submitPhase = "prepared"; p.reasons = [error.message];
+            receipt(p, broker, this.clock(), "not-sent", error.message);
+            if (this.clock().getTime() >= Date.parse(p.expiresAt) || this.clock().getTime() >= Date.parse(f.sessionClosesAt ?? "")) await this.stop(p, broker, this.clock(), "expired", tx);
+          } else p.reasons = ["Submission response unavailable. Reconcile by durable intent; no automatic retry."];
+        }
         await tx.save();
       }
-      tx.data.lastCheckAt = now.toISOString();
+      tx.data.lastCheckAt = this.clock().toISOString();
       return tx.data.purchases;
     });
   }

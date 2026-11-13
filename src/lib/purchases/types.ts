@@ -19,6 +19,8 @@ export interface Execution {
 }
 export interface Purchase extends MandateInput {
   id: string; createdAt: string; state: PurchaseState; reasons: string[];
+  /** Legacy absence means initial revision zero, not renewed authority. */
+  revision?: number;
   cancellationPolicy: "cancel-remainder-at-expiry-or-session-end";
   intentId?: string; brokerOrderId?: string; filledShares: number; spent: number;
   reserved: number; receipts: Receipt[]; revoked?: boolean;
@@ -26,6 +28,8 @@ export interface Purchase extends MandateInput {
   instrumentSnapshot: Instrument;
   accountMode: AccountStatus["mode"];
   contract?: Pick<Instrument, "conid" | "exchange" | "currency" | "evidence">;
+  /** Only prepared proves no submission was attempted. Legacy absence is unknown. */
+  submitPhase?: "prepared" | "attempted";
   stopRequested?: "revoked" | "cancelled" | "expired";
 }
 export interface AccountStatus {

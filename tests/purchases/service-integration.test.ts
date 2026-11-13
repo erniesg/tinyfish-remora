@@ -64,7 +64,7 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
     preflight: (p, i, at) => readonly.preflight(p, i, at),
     // TEST authority only. Public API/worker never constructs this broker/context.
     executionAllowed: (mode, id) => authority && mode === "paper" && id === accountId,
-  }), () => now, current);
+  }, () => now), () => now, current);
   return { store, context, service, requests, count: () => submissions,
     fill: (quantity: number) => { filled = quantity; }, lose: () => { lostResponse = true; },
     hold: () => { authority = false; }, auth: (v: boolean) => { auth = v; }, cash: (v: number) => { settled = v; },

@@ -58,7 +58,7 @@ npm run dev
 
 ## Automated share purchases — local simulation
 
-Feature requirements: [#26](https://github.com/erniesg/tinyfish-remora/issues/26). Open **Buy shares** in the cockpit, or `/dashboard/purchases`. Preview and save a bounded mandate, then arm its local simulation. A standalone worker checks due purchases without a browser, persists intent before submission, and reconciles unknown outcomes rather than resubmitting. Saved status and order evidence come from the server, not browser storage.
+Feature requirements: [#26](https://github.com/erniesg/tinyfish-remora/issues/26). Open **Buy shares** in the cockpit, or `/dashboard/purchases`. Preview and save a bounded mandate, edit an inactive draft using its saved values and a fresh preview, then arm its local simulation. Revision checks prevent stale cards from arming changed terms; an armed or submitted mandate cannot be edited. A standalone worker checks due purchases without a browser, persists intent before submission, and reconciles unknown outcomes rather than resubmitting. Saved status and order evidence come from the server, not browser storage. Unresolved listing currency/exchange/timezone stay unknown; provisional draft amounts in the account planning currency never grant purchase authority.
 
 In two terminals, use the **same absolute private store path**, outside the checkout:
 

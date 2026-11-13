@@ -174,9 +174,13 @@ test("preview exposes ended sessions and a usable later trading-day choice befor
   assert.equal(preview({ ...sgx, scheduledAt: "2026-06-16T01:00:00Z", expiresAt: "2026-06-16T08:30:00Z" }, new Date("2026-06-15T10:00:00Z")).supported, true);
 });
 test("unconfirmed Anthropic, ambiguous listing, unsupported venues and invalid bounds never resolve silently", async t => {
-  const { arm } = await setup(t);
+  const { arm, service } = await setup(t);
   const waiting = await arm({ instrumentId: "anthropic-unconfirmed" });
   assert.equal(waiting.state, "waiting-for-listing"); assert.equal(waiting.reserved, 0);
+  assert.equal(waiting.instrumentSnapshot.currency, ""); assert.equal(waiting.instrumentSnapshot.timezone, "");
+  assert.equal(waiting.instrumentSnapshot.exchange, "");
+  assert.equal(waiting.reasons.length, 1);
+  assert.equal((await service.tick())[0].state, "waiting-for-listing");
   assert.equal(resolveContract([catalog[0], catalog[1]]).instrument, null);
   assert.equal(resolveContract([catalog[4]]).instrument, null);
   assert.match(preview({ ...input, instrumentId: "d05-sgx", trigger: "first-trade" }, new Date(input.scheduledAt)).reasons.join(" "), /does not support the selected trigger/);
