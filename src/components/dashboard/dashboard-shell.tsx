@@ -703,6 +703,7 @@ export function DashboardShell() {
           </div>
 
           <div className="flex items-center gap-3">
+            <Link href="/dashboard/purchases" className="nav-link">Buy shares</Link>
             <Link href="/" className="hidden rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--paper)] sm:inline-flex">
               Landing
             </Link>
